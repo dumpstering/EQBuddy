@@ -250,10 +250,187 @@ public class LogWatcherTests
 
             var snap = stats.Snapshot();
             // The primary's LAST line (20:05) is the latest timestamp overall, even
-            // though the teammate file is READ second on every poll — the merge
-            // dispatches by timestamp, not by which file ReadLines was called on.
+            // though the teammate file is read second on every poll — not by which
+            // file was read first: TeammateLogTail buffers and PollPrimary drains it
+            // per primary line.
             Assert.Equal(new DateTime(2026, 7, 18, 20, 5, 0), snap.LastEventTime);
             Assert.Equal(4, snap.YourKillCount);
+
+            // Count and LastEventTime hold even for a dispatch order that never
+            // actually interleaved (e.g. both files concatenated whole, own-first) —
+            // assert the EXACT order instead, via the raw-line ring both files feed.
+            var recent = stats.RecentLines();   // oldest first
+            Assert.Equal(4, recent.Count);
+            Assert.Contains("orc pawn", recent[0].Message);        // own, 20:00
+            Assert.Contains("orc guard", recent[1].Message);       // mate, 20:02
+            Assert.Contains("orc sentry", recent[2].Message);      // mate, 20:04
+            Assert.Contains("orc centurion", recent[3].Message);   // own, 20:05
+        }
+        finally
+        {
+            try { Directory.Delete(ownDir, recursive: true); } catch { }
+            try { Directory.Delete(mateDir, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void TeammateLinesAtTheSameSecondGoAfterYourOwnLine()
+    {
+        // EQ log stamps are 1-second granular, so a tie between the primary and a
+        // teammate's line is common in a duo session. TeammateLogTail.DrainBefore
+        // uses a STRICT bound specifically so a tie resolves primary-first — this is
+        // the LogWatcher-level proof of that rule, via the exact dispatch order
+        // rather than via TeammateLogTail's own bound-line unit tests.
+        var ownDir = Directory.CreateTempSubdirectory("eqbuddy-watch-own-").FullName;
+        var mateDir = Directory.CreateTempSubdirectory("eqbuddy-watch-mate-").FullName;
+        try
+        {
+            var own = WriteLog(ownDir, "eqlog_Kaybek_freeport.txt",
+                "[Sat Jul 18 20:04:00 2026] You have slain orc pawn!");
+            var mate = WriteLog(mateDir, "eqlog_Buddy_freeport.txt",
+                "[Sat Jul 18 20:04:00 2026] You have slain orc guard!");
+
+            var stats = new SessionStats();
+            using var w = new LogWatcher(stats) { DeferIngestForTests = true };
+            w.SelectTeammate(mate);
+            w.Select(own);
+            w.FinishInitialIngest(w.SelectGeneration);
+
+            var recent = stats.RecentLines();   // oldest first
+            Assert.Equal(2, recent.Count);
+            Assert.Contains("orc pawn", recent[0].Message);    // own line, same second — dispatches first
+            Assert.Contains("orc guard", recent[1].Message);   // teammate line, same second — dispatches after
+        }
+        finally
+        {
+            try { Directory.Delete(ownDir, recursive: true); } catch { }
+            try { Directory.Delete(mateDir, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void APoisonedPollDiscardsTheTeammatesRemainderInsteadOfDeferringIt()
+    {
+        // Regression: when PollPrimary swallows a consumer throw (its catch sets
+        // LastError), the old code skipped the trailing teammate drain but left
+        // whatever was still buffered in place — deferred, not dropped. On the NEXT
+        // poll, with LastError unchanged, the trailing drain ran normally and
+        // dispatched that leftover line as though it had just arrived live. Since
+        // this can happen during the very poll that finishes initial ingest, the
+        // leftover can dispatch on a LATER poll after InitialIngestDone has already
+        // flipped true — firing a Text watch alert for a historical line.
+        var ownDir = Directory.CreateTempSubdirectory("eqbuddy-watch-own-").FullName;
+        var mateDir = Directory.CreateTempSubdirectory("eqbuddy-watch-mate-").FullName;
+        try
+        {
+            // The second own line is the poison: its text matches a Text watch rule
+            // whose handler throws, so PollPrimary's own catch swallows it and sets
+            // LastError partway through the SAME poll that ingests everything below.
+            var own = WriteLog(ownDir, "eqlog_Kaybek_freeport.txt",
+                "[Sat Jul 18 15:00:00 2026] You have slain orc pawn!",
+                "[Sat Jul 18 15:00:05 2026] You have slain orc sentry!");
+            // Stamped AFTER the primary's last line, so it is still buffered —
+            // undispatched — the instant PollPrimary throws on the line above.
+            var mate = WriteLog(mateDir, "eqlog_Buddy_freeport.txt",
+                "[Sat Jul 18 15:00:10 2026] You have slain orc legionnaire!");
+
+            var stats = new SessionStats();
+            var otherMatches = new List<string>();
+            stats.TextMatched += raw =>
+            {
+                if (raw.Line.Contains("orc sentry")) throw new InvalidOperationException("poison");
+                otherMatches.Add(raw.Line);
+            };
+            // Seeds the prefilter before any ingest — RefreshTextPatterns is what a
+            // real host calls before Select; without it these lines would never
+            // reach TextMatched at all, poisoned or not.
+            stats.RefreshTextPatterns(
+            [
+                new TrackedRule { Name = "poison", Pattern = "orc sentry", Kind = WatchKind.Text },
+                new TrackedRule { Name = "mate-kill", Pattern = "orc legionnaire", Kind = WatchKind.Text },
+            ]);
+
+            using var w = new LogWatcher(stats) { DeferIngestForTests = true };
+            w.SelectTeammate(mate);
+            w.Select(own);
+            // The one full-file ingest poll: PollPrimary throws on the "orc sentry"
+            // line, swallows it into LastError, and — with the fix — Discards the
+            // teammate's still-buffered "orc legionnaire" line rather than deferring
+            // it. InitialIngestDone still flips true; PollPrimary's own containment
+            // means the throw never reaches FinishInitialIngest.
+            w.FinishInitialIngest(w.SelectGeneration);
+            Assert.True(w.InitialIngestDone);
+            Assert.NotNull(w.LastError);
+
+            // A second, otherwise-uneventful poll (no new bytes anywhere) is where
+            // the old bug dispatched the deferred line — "live", after ingest.
+            w.PollForTests();
+
+            Assert.Equal(2, stats.Snapshot().YourKillCount);   // both OWN kills only
+            Assert.DoesNotContain(otherMatches, l => l.Contains("orc legionnaire"));
+        }
+        finally
+        {
+            try { Directory.Delete(ownDir, recursive: true); } catch { }
+            try { Directory.Delete(mateDir, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void APoisonedPollIsDetectedEvenWhenTheSameExceptionInstanceRecurs()
+    {
+        // Regression for the exception-IDENTITY blind spot: the old Poll() detected a
+        // poisoned PollPrimary by `!ReferenceEquals(LastError, before)`. A consumer
+        // that caches ONE exception instance and rethrows it on every matching
+        // primary line reads as "unchanged" — and therefore as SUCCESS — on the
+        // second and every later poll, because the rethrown instance is reference-
+        // equal to what was already sitting in LastError. The fix clears LastError to
+        // null immediately before PollPrimary and tests for non-null after, which
+        // still catches a rethrown identical instance. Proven across TWO polls, with
+        // the SAME exception object both times, and a teammate line buffered past the
+        // bound each time that must be discarded on BOTH — never dispatched.
+        var ownDir = Directory.CreateTempSubdirectory("eqbuddy-watch-own-").FullName;
+        var mateDir = Directory.CreateTempSubdirectory("eqbuddy-watch-mate-").FullName;
+        try
+        {
+            var poison = new InvalidOperationException("poison");   // ONE instance, rethrown every poll
+            var own = WriteLog(ownDir, "eqlog_Kaybek_freeport.txt",
+                "[Sat Jul 18 15:00:00 2026] You have slain orc sentry!");   // matches the poison rule
+            var mate = WriteLog(mateDir, "eqlog_Buddy_freeport.txt",
+                "[Sat Jul 18 15:00:05 2026] You have slain orc legionnaire!");   // buffered past the bound
+
+            var stats = new SessionStats();
+            stats.TextMatched += raw => { if (raw.Line.Contains("orc sentry")) throw poison; };
+            stats.RefreshTextPatterns(
+            [
+                new TrackedRule { Name = "poison", Pattern = "orc sentry", Kind = WatchKind.Text },
+            ]);
+
+            using var w = new LogWatcher(stats) { DeferIngestForTests = true };
+            w.SelectTeammate(mate);
+            w.Select(own);
+            // Poll #1 (full-file ingest): PollPrimary throws `poison` on "orc sentry".
+            // The teammate's buffered "orc legionnaire" line (timestamped after it)
+            // must be discarded, not deferred.
+            w.FinishInitialIngest(w.SelectGeneration);
+            Assert.True(w.InitialIngestDone);
+            Assert.Same(poison, w.LastError);
+            Assert.Equal(1, stats.Snapshot().YourKillCount);   // own's "orc sentry" only
+            Assert.DoesNotContain(stats.RecentLines(), l => l.Message.Contains("orc legionnaire"));
+
+            // A new matching line on each side, between polls.
+            File.AppendAllText(own, "[Sat Jul 18 15:00:10 2026] You have slain orc sentry!\n");
+            File.AppendAllText(mate, "[Sat Jul 18 15:00:15 2026] You have slain orc bandit!\n");
+
+            // Poll #2, driven directly via the test seam: PollPrimary throws the SAME
+            // `poison` instance again. The old ReferenceEquals check saw LastError
+            // holding that same reference both before and after the call and read it
+            // as unchanged; the fix must still detect this poll as poisoned.
+            w.PollForTests();
+            Assert.Same(poison, w.LastError);
+            Assert.Equal(2, stats.Snapshot().YourKillCount);   // both own "orc sentry" kills only
+            Assert.DoesNotContain(stats.RecentLines(), l => l.Message.Contains("orc legionnaire"));
+            Assert.DoesNotContain(stats.RecentLines(), l => l.Message.Contains("orc bandit"));
         }
         finally
         {
@@ -347,13 +524,21 @@ public class LogWatcherTests
 
             // The SAME two lines fed as the TEAMMATE, alongside an unrelated primary
             // log: BuffTracker (and every consumer but SessionStats/Mez) must see
-            // nothing from them at all.
+            // nothing from them at all — proven alongside the POSITIVE paths, so the
+            // negative claim ("only stats and mez") isn't standing on top of a feed
+            // that reached nothing at all. The teammate log also carries a kill
+            // (proving SessionStats) and a mez cast whose landing is on the PRIMARY
+            // log (proving Mez) — "Mesmerize" is the same spell MezTrackerTests casts.
             var mateStats = new SessionStats();
             var mateBuffs = new BuffTracker();
             var mez = new MezTracker();
             var primaryLog = WriteLog(ownDir, "eqlog_Owner_freeport.txt",
-                "[Sat Jul 18 15:00:00 2026] You have slain orc pawn!");
-            var mateLog = WriteLog(mateDir, "eqlog_Buddy_freeport.txt", castLine, landLine);
+                "[Sat Jul 18 15:00:00 2026] You have slain orc pawn!",
+                "[Sat Jul 18 15:00:06 2026] an orc pawn has been mesmerized.");
+            var mateLog = WriteLog(mateDir, "eqlog_Buddy_freeport.txt",
+                castLine, landLine,
+                "[Sat Jul 18 15:00:03 2026] You begin casting Mesmerize.",
+                "[Sat Jul 18 15:00:04 2026] You have slain orc centurion!");
 
             using var w = new LogWatcher(mateStats)
                 { Buffs = mateBuffs, Mez = mez, DeferIngestForTests = true };
@@ -362,10 +547,16 @@ public class LogWatcherTests
             w.FinishInitialIngest(w.SelectGeneration);
 
             Assert.Equal(0, mateBuffs.ActiveCount);   // never reached BuffTracker
-            // SessionStats DID get the teammate's cast (SpellCastEvent is admitted),
-            // confirming the lines were ingested at all — the gap is BuffTracker's,
-            // not a missed poll.
-            Assert.Equal(1, mateStats.Snapshot().YourKillCount);   // the primary's own kill, untouched
+            // SessionStats DID get the teammate's kill: YourKillCount rises by
+            // exactly one over the primary's own "orc pawn", because of the
+            // teammate's "orc centurion" — proving the admitted path actually
+            // dispatches, not just that the excluded one doesn't.
+            Assert.Equal(2, mateStats.Snapshot().YourKillCount);
+            // Mez DID get the teammate's cast: paired with the landing line in the
+            // PRIMARY log (mez landings are bystander-visible — anyone's log sees
+            // them), the tracker shows an active mez on "Orc pawn".
+            var activeMezzes = mez.Snapshot(new DateTime(2026, 7, 18, 15, 0, 6));
+            Assert.Contains(activeMezzes, m => m.Target == "Orc pawn");
         }
         finally
         {
