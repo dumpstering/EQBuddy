@@ -200,7 +200,7 @@ public partial class MainWindow : Window, ICardContext, IZoneHost
             OutputfileAutoImport.KindOf(fileName) == OutputfileKind.Inventory
                 ? InventoryFile.FindLatest(_settings.LogFolder, Identity.Character)
                 : null;
-        _watcher = new LogWatcher(_stats);
+        _watcher = new LogWatcher(_stats); _watcher.SelectTeammate(_settings.TeammateLogPath);
         _watcher.Mez = _mezTracker;
         _watcher.Slow = _slowTracker;
         _slowTracker.Landed += OnSlowLanded;

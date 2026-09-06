@@ -6,6 +6,10 @@ namespace EQBuddy.Core;
 public sealed class AppSettings
 {
     public string? LogFolder { get; set; }
+    /// <summary>Full path to a teammate's eqlog_&lt;char&gt;_&lt;server&gt;.txt (a synced copy kept
+    /// OUTSIDE the game's Logs folder, or character follow would flip to it). Null = off.
+    /// Its lines ride the same pipeline as your own log; see LogWatcher.TeammateFeed.</summary>
+    public string? TeammateLogPath { get; set; }
     /// <summary>Folder holding EQBuddySetup.exe for updates; null = auto-detect OneDrive.</summary>
     public string? UpdateFolder { get; set; }
     /// <summary>This copy has been told that EQBuddy v2 is Windows-only and that it is

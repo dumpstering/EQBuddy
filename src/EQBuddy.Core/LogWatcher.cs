@@ -47,10 +47,18 @@ public sealed class LogWatcher : IDisposable
     private long _selectGen;
     private readonly StringBuilder _remainder = new();
 
+    /// <summary>The teammate's log, or null when the feed is off (see SelectTeammate).</summary>
+    private string? _teammatePath;
+    private string? _teammateName;
+    private long _teammateOffset;
+    private readonly StringBuilder _teammateRemainder = new();
+
     public DateTime? LastGrowth { get; private set; }
     public string? CurrentPath => _path;
     public bool InitialIngestDone { get; private set; }
     public Exception? LastError { get; private set; }
+    public string? TeammatePath => _teammatePath;
+    public string? TeammateName => _teammateName;
 
     /// <summary>
     /// How many bytes of the selected log the tail has NOT consumed yet — 0 when every
@@ -271,6 +279,37 @@ public sealed class LogWatcher : IDisposable
 
     public void Select(string path) => Select(path, 0, long.MaxValue);
 
+    /// <summary>Pick (or clear, with null) the teammate log this watcher also tails —
+    /// see <see cref="TeammateFeed"/> for what of it reaches the shared pipeline.
+    ///
+    /// If a primary log is already selected and LIVE (not an archive review), this
+    /// re-Selects it — a full replay of both files, merged. Poll merges the two
+    /// files' new lines by timestamp on every tick, but that only works for lines
+    /// that arrive AFTER the pick: a teammate chosen mid-session would otherwise
+    /// have its whole file ingested from byte 0, with OLD timestamps, on top of a
+    /// session whose clock already reads "now" — the same backward-clock wipe the
+    /// merge exists to prevent, just triggered at pick time instead of at a Poll.
+    /// <see cref="Select(string)"/> already resets and replays from scratch;
+    /// <c>SessionStats.Reset()</c> does not raise <c>SessionRolledOver</c>, and
+    /// re-Selecting the SAME path is the character-switch replay the app already
+    /// does elsewhere. Nothing replays before the first Select (the constructor
+    /// case): <see cref="SelectTeammate"/> runs before it, and that first Select's
+    /// own initial ingest merges both files from the start.</summary>
+    public void SelectTeammate(string? path)
+    {
+        string? liveToReplay = null;
+        lock (_lock)
+        {
+            _teammatePath = path;
+            _teammateName = path is null ? null : CharacterLog.FromPath(path)?.Character;
+            _teammateOffset = 0;
+            _teammateRemainder.Clear();
+            if (_path is { } p && _endOffset == long.MaxValue) liveToReplay = p;
+        }
+        // Outside the lock: Select takes it itself and queues its own ingest.
+        if (liveToReplay is not null) Select(liveToReplay);
+    }
+
     /// <summary>Select with a byte range — review mode replaying ONE session out of a
     /// multi-session file (#74). [startOffset, endOffset) must fall on line boundaries
     /// (LogSessions.Scan guarantees it); live tailing is the (0, MaxValue) case.</summary>
@@ -289,6 +328,11 @@ public sealed class LogWatcher : IDisposable
             _offset = startOffset;
             _endOffset = endOffset;
             _remainder.Clear();
+            // The primary replay restarts the session, so the teammate file (if any)
+            // must replay from the top too — otherwise its half of the session would
+            // be missing while the primary's is complete.
+            _teammateOffset = 0;
+            _teammateRemainder.Clear();
             InitialIngestDone = false;
             _stats.ClearCharacterState();
             _stats.Reset();
@@ -343,78 +387,171 @@ public sealed class LogWatcher : IDisposable
     {
         lock (_lock)
         {
-            if (_path is null || !File.Exists(_path)) return;
-            try
+            List<(DateTime Ts, string Msg)> ownLines = [];
+            var ownOffsetBefore = _offset;
+            if (_path is not null && File.Exists(_path))
             {
-                using var fs = new FileStream(_path, FileMode.Open, FileAccess.Read,
-                    FileShare.ReadWrite | FileShare.Delete);
-                var readable = Math.Min(fs.Length, _endOffset);
-                if (readable < _offset)
+                try
                 {
-                    // File truncated (session cleanup) — re-anchor but keep current stats;
-                    // the 60-minute gap rule rolls the session when new play begins.
-                    _offset = 0;
-                    _remainder.Clear();
-                    readable = Math.Min(fs.Length, _endOffset);
+                    ownLines = ReadLines(_path, ref _offset, _remainder, _endOffset);
                 }
-                if (readable == _offset) return;
-
-                fs.Seek(_offset, SeekOrigin.Begin);
-                var buf = new byte[readable - _offset];
-                fs.ReadExactly(buf);
-                var chunk = Encoding.Latin1.GetString(buf);
-                _offset = readable;
-                LastGrowth = DateTime.Now;
-
-                var text = _remainder.ToString() + chunk;
-                _remainder.Clear();
-                int start = 0;
-                while (true)
+                catch (IOException)
                 {
-                    int nl = text.IndexOf('\n', start);
-                    if (nl < 0)
-                    {
-                        _remainder.Append(text, start, text.Length - start);
-                        break;
-                    }
-                    int end = nl > start && text[nl - 1] == '\r' ? nl - 1 : nl;
-                    if (end > start)
-                    {
-                        var line = text[start..end];
-                        // Split ONCE (perf audit #13): Parse and ObserveRawLine each
-                        // used to re-run the line regex + timestamp parse. A line
-                        // whose stamp doesn't split was ignored by both before too.
-                        if (LogParser.TrySplitLine(line, out var ts, out var msg))
-                        {
-                            var evt = LogParser.Parse(ts, msg);
-                            if (evt is not null)
-                            {
-                                _stats.Apply(evt);
-                                Spawns?.Apply(evt);
-                                Mez?.Apply(evt);
-                                Slow?.Apply(evt);
-                                Buffs?.Apply(evt);
-                                BuffLosses?.Apply(evt);
-                                Raids?.Apply(evt);
-                                SpawnPoints?.Apply(evt);
-                            }
-                            // Every line, parsed or not: a Text watch rule matches the
-                            // line's words, not whatever event we did or didn't make of it.
-                            _stats.ObserveRawLine(ts, msg);
-                        }
-                    }
-                    start = nl + 1;
+                    // File busy — try again next tick.
+                }
+                catch (Exception ex)
+                {
+                    LastError = ex;
                 }
             }
-            catch (IOException)
+
+            List<(DateTime Ts, string Msg)> mateLines = [];
+            var mateOffsetBefore = _teammateOffset;
+            // The teammate feed rides only the LIVE tail — never during archive review,
+            // where _endOffset bounds one past session out of YOUR log and the
+            // teammate's file has no matching slice to bound against — and only once
+            // one has been picked (SelectTeammate). A busy teammate file gets its own
+            // try/catch below so it can never block the primary read above.
+            if (_teammatePath is { } teammatePath && _endOffset == long.MaxValue && File.Exists(teammatePath))
             {
-                // File busy — try again next tick.
+                try
+                {
+                    mateLines = ReadLines(teammatePath, ref _teammateOffset, _teammateRemainder, long.MaxValue);
+                }
+                catch (IOException)
+                {
+                    // Teammate file busy — try again next tick.
+                }
+                catch (Exception ex)
+                {
+                    LastError = ex;
+                }
+            }
+
+            if (_offset != ownOffsetBefore || _teammateOffset != mateOffsetBefore)
+                LastGrowth = DateTime.Now;
+
+            // Merge the two files' new lines by timestamp — STABLE, and the primary
+            // wins a tie — before dispatching either. SessionStats rolls the session
+            // on a FORWARD gap only (never a backward jump), so ingesting one whole
+            // file and then the other lets the clock run backwards mid-ingest
+            // whenever the second file's lines are older, and the first internal
+            // 60-minute gap in THAT file then rolls away everything the first file
+            // contributed. Dispatching in true chronological order is what keeps the
+            // existing gap-roll logic seeing a real session instead of a shuffle.
+            //
+            // Wrapped exactly like the old single-file read+dispatch was: a consumer
+            // throwing mid-ingest must not escape Poll(), or FinishInitialIngest never
+            // sets InitialIngestDone and never starts the tail timer — the app would
+            // silently stop tailing. The remaining lines of THIS poll are dropped, same
+            // as the old code; the next tick picks up from the advanced offsets above.
+            try
+            {
+                int i = 0, j = 0;
+                while (i < ownLines.Count || j < mateLines.Count)
+                {
+                    bool takeOwn = j >= mateLines.Count ||
+                        (i < ownLines.Count && ownLines[i].Ts <= mateLines[j].Ts);
+                    if (takeOwn) { Dispatch(ownLines[i].Ts, ownLines[i].Msg, teammate: false); i++; }
+                    else { Dispatch(mateLines[j].Ts, mateLines[j].Msg, teammate: true); j++; }
+                }
             }
             catch (Exception ex)
             {
                 LastError = ex;
             }
         }
+    }
+
+    /// <summary>The file-open / truncation re-anchor / seek / read / line-split half of
+    /// a poll, shared by the primary log and the teammate feed. Returns the newly
+    /// available lines in file order — it does NOT dispatch anything, so a caller can
+    /// merge two files' lines by timestamp before either reaches the consumers. Static:
+    /// it touches no instance state beyond the ref/StringBuilder parameters it's handed.
+    /// Caller holds <see cref="_lock"/> for the duration.</summary>
+    private static List<(DateTime Ts, string Msg)> ReadLines(
+        string path, ref long offset, StringBuilder remainder, long endOffset)
+    {
+        var lines = new List<(DateTime Ts, string Msg)>();
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        var readable = Math.Min(fs.Length, endOffset);
+        if (readable < offset)
+        {
+            // File truncated (session cleanup) — re-anchor but keep current stats;
+            // the 60-minute gap rule rolls the session when new play begins.
+            offset = 0;
+            remainder.Clear();
+            readable = Math.Min(fs.Length, endOffset);
+        }
+        if (readable == offset) return lines;
+
+        fs.Seek(offset, SeekOrigin.Begin);
+        var buf = new byte[readable - offset];
+        fs.ReadExactly(buf);
+        var chunk = Encoding.Latin1.GetString(buf);
+        offset = readable;
+
+        var text = remainder.ToString() + chunk;
+        remainder.Clear();
+        int start = 0;
+        while (true)
+        {
+            int nl = text.IndexOf('\n', start);
+            if (nl < 0)
+            {
+                remainder.Append(text, start, text.Length - start);
+                break;
+            }
+            int end = nl > start && text[nl - 1] == '\r' ? nl - 1 : nl;
+            if (end > start)
+            {
+                var line = text[start..end];
+                // Split ONCE (perf audit #13): Parse and ObserveRawLine each
+                // used to re-run the line regex + timestamp parse. A line
+                // whose stamp doesn't split was ignored by both before too.
+                if (LogParser.TrySplitLine(line, out var ts, out var msg))
+                    lines.Add((ts, msg));
+            }
+            start = nl + 1;
+        }
+        return lines;
+    }
+
+    /// <summary>The parse + admit + dispatch half of a poll, given one line at a time
+    /// instead of a whole file. The PRIMARY path is byte-for-byte what it was before
+    /// the teammate feed existed — all eight consumers, unconditionally. A
+    /// <paramref name="teammate"/> line reaches only SessionStats (when
+    /// <see cref="TeammateFeed.AdmitForStats"/>) and the mez tracker (when
+    /// <see cref="TeammateFeed.AdmitForMez"/>) — see the class doc on
+    /// <see cref="TeammateFeed"/> for why the other six consumers get nothing from a
+    /// teammate's log.</summary>
+    private void Dispatch(DateTime ts, string msg, bool teammate)
+    {
+        var evt = LogParser.Parse(ts, msg);
+        if (evt is not null)
+        {
+            if (teammate)
+            {
+                if (TeammateFeed.AdmitForStats(evt)) _stats.Apply(evt);
+                if (TeammateFeed.AdmitForMez(evt)) Mez?.Apply(evt);
+            }
+            else
+            {
+                _stats.Apply(evt);
+                Spawns?.Apply(evt);
+                Mez?.Apply(evt);
+                Slow?.Apply(evt);
+                Buffs?.Apply(evt);
+                BuffLosses?.Apply(evt);
+                Raids?.Apply(evt);
+                SpawnPoints?.Apply(evt);
+            }
+        }
+        // Every line, parsed or not: a Text watch rule matches the line's words, not
+        // whatever event we did or didn't make of it — teammate lines ride the same
+        // rule set.
+        _stats.ObserveRawLine(ts, msg);
     }
 
     public void Dispose() => _timer.Dispose();

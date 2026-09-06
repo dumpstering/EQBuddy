@@ -27,6 +27,9 @@ Measured 2026-08-14 at v1.82.0.
       (the widget)                              (EQBuddy Mobile, LAN)
 ```
 
+A second, optional input — a teammate's log (`AppSettings.TeammateLogPath`) — is tailed by
+the same `LogWatcher` and filtered through `TeammateFeed` before it joins the pipeline.
+
 **There used to be a third arm on that fork.** `EQBuddy.Avalonia` — the cross-platform
 Linux/macOS widget, 68 files and 23,201 lines, the largest project in the repo — was deleted
 on 2026-09-04 (E-2c). EQBuddy Evolved is Windows-only, by the owner-approved charter; the

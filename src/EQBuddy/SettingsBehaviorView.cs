@@ -73,6 +73,7 @@ internal sealed class SettingsBehaviorView
     private CheckBox _truncate = null!, _archive = null!, _tutorial = null!, _perfStats = null!;
     private StackPanel _hotkeysPanel = null!;
     private TextBox _regenPerTickBox = null!;
+    private TextBlock _teammatePathLabel = null!;
 
     private UIElement Build()
     {
@@ -400,7 +401,66 @@ internal sealed class SettingsBehaviorView
             + "have the disk space back.",
             new Thickness(40, 2, 0, 0)));
 
+        panel.Children.Add(Heading("Teammate log", margin: new Thickness(0, 14, 0, 0)));
+        var teammateRow = new StackPanel { Orientation = Orientation.Horizontal };
+        _teammatePathLabel = new TextBlock
+        {
+            Text = TeammateLabel(), FontSize = 12, TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center, MaxWidth = 220,
+            Style = (Style)_resource("Dim"),
+        };
+        teammateRow.Children.Add(_teammatePathLabel);
+        var teammateChoose = new Button
+        {
+            Content = "Choose file…", Style = (Style)_resource("ActionButton"),
+            Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(8, 3, 8, 3),
+        };
+        teammateChoose.Click += (_, _) => OnChooseTeammateLog();
+        teammateRow.Children.Add(teammateChoose);
+        var teammateClear = new Button
+        {
+            Content = "Clear", Style = (Style)_resource("ActionButton"),
+            Margin = new Thickness(6, 0, 0, 0), Padding = new Thickness(8, 3, 8, 3),
+        };
+        teammateClear.Click += (_, _) => OnClearTeammateLog();
+        teammateRow.Children.Add(teammateClear);
+        panel.Children.Add(teammateRow);
+        panel.Children.Add(Dim(
+            "Also read a teammate's log (a synced copy of their eqlog_name_server.txt). Keep it "
+            + "OUTSIDE the game's Logs folder, or EQBuddy will follow it as if it were you. Their "
+            + "kills, damage, loot, money, XP and casts join this session; world lines your own "
+            + "log already shows, and their character state (level, AA, buffs on them), are "
+            + "skipped.",
+            new Thickness(0, 4, 0, 0)));
+
         return panel;
+    }
+
+    private string TeammateLabel() =>
+        _main.Settings.TeammateLogPath is { Length: > 0 } path ? path : "(none)";
+
+    private void OnChooseTeammateLog()
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Filter = "EQ logs (eqlog_*.txt)|eqlog_*.txt|All files (*.*)|*.*",
+        };
+        // Owned, like GearCardView's ImportList — an always-on-top widget can otherwise
+        // leave the dialog landing behind it.
+        var owner = Window.GetWindow(_teammatePathLabel);
+        if ((owner is not null ? dlg.ShowDialog(owner) : dlg.ShowDialog()) != true) return;
+        _main.Settings.TeammateLogPath = dlg.FileName;
+        _main.Settings.Save();
+        _main._watcher.SelectTeammate(dlg.FileName);
+        _teammatePathLabel.Text = TeammateLabel();
+    }
+
+    private void OnClearTeammateLog()
+    {
+        _main.Settings.TeammateLogPath = null;
+        _main.Settings.Save();
+        _main._watcher.SelectTeammate(null);
+        _teammatePathLabel.Text = TeammateLabel();
     }
 
     // ================================================================== plumbing ====
