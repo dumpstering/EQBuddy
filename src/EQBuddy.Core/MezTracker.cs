@@ -48,8 +48,28 @@ public sealed record MezState(
 /// 44s Mesmerization shrank to the 24s base, #69) — an occasionally-wrong-for-one-cycle
 /// value that self-heals beats a permanently wrong one under either policy. Learned
 /// values persist via <see cref="AttachStore"/>.
+///
+/// <b>Solo-visible behaviour change (repair round A5's correction):</b> the caster
+/// tracking these fixes rely on is not teammate-only plumbing — bystander casts
+/// (<see cref="OtherCastEvent"/>) were already carried pre-redesign, per the class
+/// summary above ("from ANY group member's log"). So three of this round's fixes
+/// change what a SOLO player watching a real (non-EQBuddy-teammate) group sees, not
+/// only duo sessions: (1) <see cref="OnLanding"/> now consumes a non-AoE cast after
+/// one landing instead of letting it explain a second, unrelated one; (2)
+/// <see cref="OnLanding"/>'s same-name refresh, and (3) <see cref="OnWornOff"/>'s
+/// entry selection, both now require the SAME caster rather than matching on name
+/// alone — two different real players mezzing a same-named creature used to collapse
+/// into one chip and could hand one player's fade to the other's kill. All three were
+/// latent bugs before this round touched the surface at all; they were simply
+/// unreachable by any prior test because no test cast the same mez from two casters.
+/// <see cref="MezTrackerTests.TwoRealCastersOnTheSameNamedCreatureGetSeparateChipsSolo"/>
+/// is the regression proving the fixed (not merely different) solo behaviour. The
+/// fourth change, <see cref="RememberCast"/>'s 2-second dedupe, has no solo-reachable
+/// path: it only fires when the SAME (caster, spell, time) pair is offered twice,
+/// which happens only via the teammate feed's own line plus this log's
+/// <see cref="OtherCastEvent"/> echo of it — a solo log never double-reports one cast.
 /// </summary>
-public sealed class MezTracker
+public sealed partial class MezTracker
 {
     /// <summary>A landing this long after the cast began no longer belongs to it
     /// (covers cast time + travel + log flushing).</summary>
@@ -81,21 +101,58 @@ public sealed class MezTracker
     /// pairing stays 1:1 and both breaks are counted. The window only has to cover
     /// message lag splitting a pair across a second boundary.</summary>
     private static readonly TimeSpan BreakPairWindow = TimeSpan.FromSeconds(2);
-    private readonly Dictionary<string, (int Count, DateTime At)> _unpairedBreaks =
+
+    /// <summary>Repair round C6: which HALF of a break-pair a pending token
+    /// represents — a token is only ever the other line's partner when the NEW
+    /// line is the OPPOSITE kind. The old token (a bare per-name count) recorded
+    /// neither the kind nor the caster, so it could not tell "the other half of
+    /// THIS break" apart from "a completely different break of a same-named
+    /// creature" — two DIFFERENT casters' mobs, sharing a name, both fading
+    /// NATURALLY (two WornOff lines, no Awakened line for either) within the
+    /// pairing window wrongly consumed each other's token, and the second
+    /// caster's own chip was left lingering because <see cref="OnWornOff"/> never
+    /// reached its own entry-removal code once <see cref="BreakAlreadyCounted"/>
+    /// said "already counted".</summary>
+    private enum BreakHalf { WornOff, Awakened }
+
+    /// <summary>Repair round C6: a LIST per name, not a single count — same-named
+    /// creatures can genuinely break more than once inside one pairing window (the
+    /// class doc's own "two mobs genuinely broken in the same second" case), and
+    /// each pending half needs its OWN kind (and caster, for a WornOff half) kept
+    /// apart from the others.</summary>
+    private readonly Dictionary<string, List<(BreakHalf Half, string Caster, DateTime At)>> _unpairedBreaks =
         new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>True when this line is the OTHER half of a break already counted, in
-    /// which case it must not drop a second chip. Otherwise the caller drops one and
-    /// this leaves the token for the partner line.</summary>
-    private bool BreakAlreadyCounted(string name, DateTime now)
+    /// <summary>True when this line is the OPPOSITE half of a break already
+    /// pending, in which case it must not drop a second chip. Otherwise the
+    /// caller drops one and this leaves a token for the partner line.
+    /// <paramref name="caster"/> is the CASTER for a <see cref="BreakHalf.WornOff"/>
+    /// line (caster-private: only the caster's own log prints it) and empty for
+    /// <see cref="BreakHalf.Awakened"/> (bystander-visible, names the WAKER, never
+    /// the original caster) — retained on the token for the shape of the data,
+    /// even though an Awakened line has no caster of its own to compare it
+    /// against when consuming one.</summary>
+    private bool BreakAlreadyCounted(string name, DateTime now, BreakHalf half, string caster)
     {
-        if (_unpairedBreaks.TryGetValue(name, out var p)
-            && p.Count > 0 && (now - p.At).Duration() <= BreakPairWindow)
+        if (_unpairedBreaks.TryGetValue(name, out var pending))
         {
-            _unpairedBreaks[name] = (p.Count - 1, p.At);
-            return true;
+            // Only the OPPOSITE kind can be this break's other half: two WornOffs
+            // (or two Awakeneds) for the same name are two DIFFERENT natural
+            // breaks, never one break split across two lines of the SAME kind.
+            var idx = pending.FindIndex(p => p.Half != half && (now - p.At).Duration() <= BreakPairWindow);
+            if (idx >= 0)
+            {
+                pending.RemoveAt(idx);
+                if (pending.Count == 0) _unpairedBreaks.Remove(name);
+                return true;
+            }
         }
-        _unpairedBreaks[name] = (1, now);
+        else
+        {
+            pending = [];
+            _unpairedBreaks[name] = pending;
+        }
+        pending.Add((half, caster, now));
         return false;
     }
     /// <summary>EQ effects run on 6-second server ticks, and the worn-off message fires
@@ -185,7 +242,7 @@ public sealed class MezTracker
 
     /// <summary>Second/third consumer of the parsed event stream (like SpawnTimers):
     /// replay-safe because everything keys on log timestamps.</summary>
-    public void Apply(GameEvent evt)
+    public void Apply(GameEvent evt, string source)
     {
         var changed = false;
         lock (_lock)
@@ -193,11 +250,18 @@ public sealed class MezTracker
             switch (evt)
             {
                 case SpellCastEvent own when IsMezSpell(own.Spell):
-                    RememberCast("You", own.Spell, own.Time);
+                    RememberCast(source, own.Spell, own.Time);
                     break;
                 case OtherCastEvent other when IsMezSpell(other.Spell):
                     RememberCast(other.Caster, other.Spell, other.Time);
                     break;
+                // Plan Part 4a defect 2: nothing used to cancel a failed cast, so it
+                // stayed in _recentCasts for the whole CastToLand window and could
+                // claim a landing a DIFFERENT caster's still-in-flight cast produced.
+                // See MezTracker.Teammate.cs for CancelCast.
+                case FizzleEvent f: CancelCast(source, f.Spell, f.Time); break;
+                case SpellInterruptedEvent si: CancelCast(source, si.Spell, si.Time); break;
+                case SpellBlockedEvent sb: CancelCast(source, sb.Spell, sb.Time); break;
                 case MezzedEvent mez:
                     changed = OnLanding(mez);
                     break;
@@ -241,7 +305,7 @@ public sealed class MezTracker
                 case SpellWornOffEvent { Pet: false } wo when wo.Target.Length > 0 && IsMezSpell(wo.Spell):
                     // Caster-private natural fade: the exact end, and the one signal that
                     // can teach a real duration (see class summary).
-                    changed = OnWornOff(wo);
+                    changed = OnWornOff(wo, source);
                     break;
                 case ZoneEvent:
                     changed = _active.Count > 0;
@@ -290,6 +354,10 @@ public sealed class MezTracker
 
     private void RememberCast(string caster, string spell, DateTime t)
     {
+        // Dedupe: the same cast can reach here twice (teammate's own line + our OtherCastEvent).
+        if (_recentCasts.Any(c => c.Caster.Equals(caster, StringComparison.OrdinalIgnoreCase)
+            && c.Spell.Equals(spell, StringComparison.OrdinalIgnoreCase)
+            && (t - c.Time).Duration() <= TimeSpan.FromSeconds(2))) return;
         _recentCasts.Add((caster, spell, t));
         if (_recentCasts.Count > 32) _recentCasts.RemoveRange(0, 16);
         _lastCastOf[spell] = t;
@@ -297,10 +365,17 @@ public sealed class MezTracker
 
     private bool OnLanding(MezzedEvent mez)
     {
-        // Newest explaining cast wins. AoE mezzes land on several targets from one cast,
-        // so the cast is NOT consumed — each landing within the window claims it.
+        // Newest explaining cast wins.
         var cast = _recentCasts.LastOrDefault(c => mez.Time - c.Time <= CastToLand);
         if (cast.Spell is null || cast.Spell.Length == 0) return false;   // nobody we can see cast a mez
+
+        // Repair round A5 (related risk): a non-AoE cast explains exactly ONE landing —
+        // left unconsumed, the same still-in-flight single-target cast could resolve
+        // TWO concurrent landings (different targets) to the identical caster. AoE
+        // mezzes genuinely land on several targets from one cast, so only those stay
+        // unconsumed — each landing within the window still claims it.
+        if (!(_catalog.TryGetValue(SpellCatalog.BaseName(cast.Spell), out var castInfo) && castInfo.Aoe))
+            _recentCasts.Remove(cast);
 
         var entry = new MezState(mez.Target, cast.Spell, cast.Caster, mez.Time,
             DurationFor(cast.Spell) is { } d ? mez.Time.AddSeconds(d) : null);
@@ -322,14 +397,17 @@ public sealed class MezTracker
         }
 
         // Same-name handling (issue #32, reworked from the original keep-earliest rule):
-        // chain-mezzing ONE target is the normal workflow, so a re-landing REFRESHES the
-        // earliest-expiring same-name entry. The exception is several landings in the
-        // same second (an AoE catching same-named mobs): those are distinct creatures
-        // and get their own entries — the UI numbers them.
+        // chain-mezzing ONE target is the normal workflow, so a re-landing from the
+        // SAME CASTER refreshes the earliest-expiring same-name entry. A DIFFERENT
+        // caster's landing on the same name is a distinct creature that happens to
+        // share it (repair round A5) — exactly like the pre-existing same-second AoE
+        // exception, just keyed on caster instead of timestamp — and gets its own
+        // entry so the UI numbers them and a later fade can tell them apart.
         var sameName = _active.Where(m =>
             m.Target.Equals(mez.Target, StringComparison.OrdinalIgnoreCase)).ToList();
         var refresh = sameName
-            .Where(m => m.LandedAt != mez.Time)
+            .Where(m => m.LandedAt != mez.Time
+                && m.Caster.Equals(entry.Caster, StringComparison.OrdinalIgnoreCase))
             .OrderBy(m => m.ExpiresAt ?? DateTime.MaxValue)
             .FirstOrDefault();
         if (refresh is not null) _active.Remove(refresh);
@@ -337,16 +415,31 @@ public sealed class MezTracker
         return true;
     }
 
-    private bool OnWornOff(SpellWornOffEvent wo)
+    private bool OnWornOff(SpellWornOffEvent wo, string source)
     {
         // Among same-named entries the longest-asleep one fades first.
         var name = LogParser.Normalize(wo.Target);
         // ...unless the game's explicit "has been awakened by" line already counted this
         // same break (#183). Then this is its partner, not a second creature: drop no
         // chip, and learn nothing either — a break is not a measurement of the duration.
-        if (BreakAlreadyCounted(name, wo.Time)) return false;
+        // Consumed FIRST (repair round A5): this pairing must be settled before
+        // caster-scoped selection ever runs below. Repair round C6: `source` is
+        // recorded on the token AND this line only ever consumes an Awakened-kind
+        // pending token (never another WornOff's) — two different casters' same-
+        // named creatures both fading naturally is two DIFFERENT breaks, not one
+        // break's two halves.
+        if (BreakAlreadyCounted(name, wo.Time, BreakHalf.WornOff, source)) return false;
+        // Caster-private: "Your X spell has worn off of Y" only ever prints in the
+        // CASTER's own log, so select by BOTH target AND caster (repair round A5) —
+        // never by name alone, then reject afterward. The old post-hoc rejection let a
+        // fade pick the earliest-expiring SAME-NAMED chip regardless of who cast it,
+        // reject it for a caster mismatch, and leave the chip that actually SHOULD have
+        // ended (a teammate's own, same-named) lingering with the token above already
+        // spent for nothing. An unknown/empty caster falls through unfiltered — the
+        // pre-existing behaviour for entries with no recorded caster.
         var entry = _active
-            .Where(m => m.Target.Equals(name, StringComparison.OrdinalIgnoreCase))
+            .Where(m => m.Target.Equals(name, StringComparison.OrdinalIgnoreCase)
+                && (m.Caster.Length == 0 || m.Caster.Equals(source, StringComparison.OrdinalIgnoreCase)))
             .OrderBy(m => m.LandedAt)
             .FirstOrDefault();
         if (entry is null) return false;
@@ -510,8 +603,11 @@ public sealed class MezTracker
     {
         var name = LogParser.Normalize(awakened.Target);
         _awake[name] = ((_awake.TryGetValue(name, out var prev) ? prev.Count : 0) + 1, awakened.Time);
-        // The awake knowledge above is recorded either way — only the chip is paired.
-        if (BreakAlreadyCounted(name, awakened.Time)) return false;
+        // The awake knowledge above is recorded either way — only the chip is
+        // paired. Repair round C6: no caster to record — this line names the
+        // WAKER, never the original caster — and it only ever consumes a
+        // WornOff-kind pending token, never another Awakened's.
+        if (BreakAlreadyCounted(name, awakened.Time, BreakHalf.Awakened, "")) return false;
         var victim = _active
             .Where(m => m.Target.Equals(name, StringComparison.OrdinalIgnoreCase))
             .OrderBy(m => m.ExpiresAt ?? DateTime.MaxValue)
@@ -588,10 +684,15 @@ public sealed class MezTracker
         // A pairing token outside its 2 s window is dead by definition — without this
         // sweep the ledger kept one entry per mob name for the PROCESS lifetime, the
         // one dictionary in this class nothing ever emptied (review catch, 2026-08-18).
-        foreach (var stale in _unpairedBreaks
-                     .Where(kv => (now - kv.Value.At).Duration() > BreakPairWindow)
-                     .Select(kv => kv.Key).ToList())
-            _unpairedBreaks.Remove(stale);
+        // Repair round C6: a name can hold SEVERAL pending halves now (a list, not
+        // a single count) — sweep the stale ones out of each list individually,
+        // then drop the name entirely once nothing pending remains for it.
+        foreach (var name in _unpairedBreaks.Keys.ToList())
+        {
+            var pending = _unpairedBreaks[name];
+            pending.RemoveAll(p => (now - p.At).Duration() > BreakPairWindow);
+            if (pending.Count == 0) _unpairedBreaks.Remove(name);
+        }
         // Entries are RETAINED well past their visible expiry (Snapshot hides them
         // after ExpiryLinger): a rank-lengthened mez can fade long after the base
         // duration, and the natural-fade line must still find its entry to learn

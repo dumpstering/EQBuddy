@@ -20,7 +20,7 @@ namespace EQBuddy.Core;
 /// Only items the filter admits are stored (the UI wires the quest catalog's
 /// IsQuestItem), so the file stays quest-sized instead of hoarding every rat whisker.
 /// </summary>
-public sealed class QuestLedgerStore
+public sealed class QuestLedgerStore : IDurableSessionStore
 {
     public sealed class Entry
     {

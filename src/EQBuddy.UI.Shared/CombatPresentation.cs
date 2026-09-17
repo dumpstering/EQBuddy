@@ -52,7 +52,7 @@ public static class CombatPresentation
                   $"melee attacks ({avoidance:0}%)");
 
         if (s.SpecialHits.Count > 0)
-            lines.Add(string.Join(" · ", s.SpecialHits.Select(x => $"{x.Name} {x.Count}")));
+            lines.Add(string.Join(" · ", s.SpecialHits.Select(x => $"{DuoStats.DisplayActorTag(x.Name)} {x.Count}")));
 
         if (s.DotDamage + s.DirectSpellDamage > 0)
             lines.Add($"Your spells: {s.DotDamage:N0} over time / {s.DirectSpellDamage:N0} direct");

@@ -8,6 +8,116 @@
 
 **Last cut** — 2026-09-21 by DRA-294, under the Helm arm (c) discharge floor ruled in DRA-282 Q2 item 4 (tip PR #773, `9121470c`): dropped the file from 55,411 B to the 32,768 B floor. Ten blocks moved verbatim to the archive — `DRA-199`, `DRA-180 D2`, `DRA-180 D3`, `DRA-164 D1–D3`, `DRA-149 D5`, `DRA-149 D4`, `DRA-149 D2`, `DRA-164 D4`, `DRA-181 D4`, `DRA-180 D1` — each re-checked by hand against line 7's floor and found to hold no open ask, unexpired PARK/HOLD or standing rule resident IN THIS FILE: DRA-164 D1–D3 item 8's republish question and DRA-164 D4 item 1's SIGN-as-PR-comment question are narrative, not markers, and both are overtaken by continued practice since (PR-comment SIGNs have landed routinely, e.g. DRA-262); DRA-180 D2/D3's "FABLE.md item not drained" notes describe `FABLE.md`'s own live state, not a hold here. The `exo-experiment:` STANDING block (re-pinned by DRA-231) and the DRA-161 Helm-LOCK entry are both unaffected and stay — DRA-161's LOCK is independently live and restated in `HELM.md` ("Soft/Planner may Soft file a fresh amended DRA-55 plan"), but nothing forced its removal to meet the floor so it was kept here too rather than risk-judged out. `DRA-262 D2` (2026-09-21) stays as the current tip. Full text of all ten: `docs/ops/claude-archive/channels/2026-Q3/DECISIONS.md`.
 
+## 2026-09-17 — Duo totals now reach EQBuddy Mobile, reversing the 2026-09-07 repair
+
+- **EQBuddy Mobile shows combined duo totals again, not the watched character's own
+  alone** · leave Mobile primary-only, as the 2026-09-07 Codex-review repair round
+  deliberately set it (`CODEX-FIX-REPORT.md` §1: *"Mobile receives primary-only
+  snapshots... It is an intentional behavior change, not merely a `[JsonIgnore]`
+  correction"*) · **this is the user's own call, a direct reversal, not a bug fix and
+  not the architect's or the executor's** — asked and answered explicitly: duo totals
+  belong on the phone too, matching the desktop widget. `MainWindow.BuildSnapshot()`
+  lost its `primaryOnly` parameter (dead once both Mobile call sites stopped passing
+  `true` — this repo treats a dead parameter as a defect, `DeadSettingTests`'s shape)
+  and both the 50 ms low-latency pump and the 1 Hz reconciliation tick now build the
+  same `DuoSnapshot()` the desktop widget already used.
+- **The pump's gate now reads `SessionStats.DuoVersion`, not `CurrentVersion`** · leave
+  the gate on `CurrentVersion` since the snapshot argument was the only thing changing
+  · corrected before it shipped: `CompanionPumpGate.ShouldPush` and the reconciliation
+  tick's `Observe` must be fed the SAME version number as each other, or a teammate's
+  own activity — invisible to `CurrentVersion` alone — moves the pushed snapshot's
+  `Version` without ever satisfying the gate, and the low-latency pump leaks a push on
+  every reconciliation tick, forever, the moment a teammate is assigned — the exact
+  trap this branch's own history already found and fixed once for the desktop side.
+  `MobileDuoPumpVersionTests.TheTrapIsReal…` reproduces the leak against the mismatch
+  before proving `DuoVersion` on both sides closes it, and separately checks the
+  gate/observed version agree across all four rollover shapes (no teammate, teammate
+  active, a primary rollover, a teammate-only rollover).
+- **The consequence, stated plainly rather than left to be discovered:** the archiver,
+  the 5-minute checkpoint and the wiki pack still snapshot the watched character ALONE,
+  by design (`DuoStatsTests.TheArchiverStillRecordsTheWatchedCharacterAlone`,
+  untouched) — a teammate's session is still never persisted. So a phone glanced at
+  mid-session can now show a bigger number than the session history that gets saved
+  for that day ever will. `WhatsNew.json`'s unshipped 2.0.0 entry says this in as many
+  words; `docs/Architecture.md` and `docs/TestPlan.md` are corrected to match, and the
+  stale "Mobile is primary-only" comment on `SessionStats.DuoVersion`
+  (`DuoCompanion.cs`) is rewritten rather than left to describe a decision that no
+  longer holds.
+
+## 2026-09-07 (repair round B1–B4 — combat-span union, breakdown merge reversal)
+
+- **`DamageBySource`, `PetAbilities`, `SpecialHits`, `DamageByAttacker`, `HealsByHealer`,
+  `HealsBySpell`, `DamageTimeline` and `Effort` are now MERGED, reversing the hold recorded
+  below** · leave them `mine`-only and label the header as a duo number instead · **this is
+  the user's own call, not the architect's or the executor's** — the question was put to
+  them explicitly (per-player breakdowns merged, or the header labelled as a duo number)
+  and they chose merged: every board now sums to its own header. Ability/spell/hit-type
+  rows (`DamageBySource`, `PetAbilities`, `HealsBySpell`, `SpecialHits`) have no field that
+  says WHO performed them, so mine's own rows are left untouched and the teammate's are
+  tagged with their character name rather than summed into a same-named row — "Kick" and
+  "Kick (Buddy)" stay two rows, not one that has quietly forgotten two people kicked.
+  Person-keyed rows (`DamageByAttacker`, `HealsByHealer`) have no such ambiguity — the name
+  is already the external party who hit or healed you — and sum by name normally.
+  `DamageTimeline` buckets on an absolute per-minute clock already shared by both logs, so
+  merging is aligning matching minutes and summing, never concatenating. `Effort` sums
+  `DamageDone`/`HealingDone`/`DamageDoneInResumeWindow` from both sides and keeps `Window`/
+  `ResumeWindow` from mine, matching the same "windows are mine's own" rule `Recent` already
+  uses.
+- **`CombatSeconds` is now a real UNION of both sides' timestamped combat spans, not
+  `Math.Max`** · leave `Math.Max`, reported as a budget-blocked gap (the earlier call, made
+  without checking that the duo-combine partial file already reaches SessionStats' private
+  `_combatSpans`/`_closedCombatSeconds` for free) · corrected once that access was pointed
+  out: the union is computed against the LIVE `SessionStats` instances (not the snapshots
+  `DuoStats.Combine` sees) inside the same partial class those private fields belong to, at
+  zero cost to SessionStats.cs's own sync budget. The 2048-entry trim on very old spans
+  (very long sessions) degrades to an over-count, never an under-count, of the trimmed
+  portion — documented on `SessionStats.UnionCombatSeconds`'s own doc comment.
+- **The duo-combine seam moved from `SessionStats.Duo.cs` to `DuoCompanion.cs`, no code
+  change** · keep growing `SessionStats.Duo.cs`, which was raising `ArchitectureTests`'
+  `SessionStats*.cs` hotspot ratchet baseline every round · renamed instead, since C# does
+  not require a partial class's file to share its name — `DuoCompanion.cs` falls outside
+  the glob entirely, so its growth (unconstrained by design) never touches a ratchet
+  upstream also maintains, and the baseline moved back to its original 2375.
+
+## 2026-09-07 (teammate-log redesign — isolated SessionStats, the ambiguous combine rows)
+
+- **The teammate's log now drives its OWN `SessionStats` instance rather than a shared
+  one gated by a `fromTeammate` flag** · keep gating individual `Apply` call sites, since
+  three rounds of that approach each closed a named leak and each following audit found
+  the same class of bug in a new place · replaced with structural isolation, because a
+  flag can be forgotten at a new call site and an unattached instance cannot leak by
+  construction — `TeammateLogTail.Stats` never gets a store, a subscriber, or the
+  watched character's identity, so nothing exists for a future bug to attach to.
+- **`CurrentDps` sums both sides' live rates** · pick one side's number, or show neither ·
+  summed, and documented as an approximation: hiding either side's activity entirely
+  is worse than a rate that is occasionally a rough estimate of the combined fight.
+- **`Mobs` (per-creature farming rollup) ships as `mine`, unmerged, for v1** · merge it
+  now, since kills/loot are exactly what a duo player wants combined · deferred (6a):
+  correctly merging it needs a mob-identity join (kills, loot, coin/level bounds) while
+  leaving `Xp`/`Factions`/`Considers`/`Zone` per-character — real work, scoped out of
+  this pass. The gap (a mob a teammate solos alone never appears in "Mob farming") is
+  documented in `DuoStats`'s own class doc rather than silently accepted.
+- **`Encounters`/`RecentEncounters`/`EncounterCount`/`LastFight` stay `mine`, explicit
+  non-goal** · a fight-identity join across two logs is a real feature, not a field-combine
+  rule, and it is not being built as a side effect of this redesign.
+- **`Deaths` and `CurrentTargets` stay `mine`** · "we died"/"we're fighting X" are duo
+  facts a player might want · `TimedDetail(Time, Text)` cannot say WHOSE death it was
+  without a shape change, and duo partners fighting the same things makes `CurrentTargets`
+  redundant to combine anyway. Both stay a v1 gap, not a bug.
+- **`PartyKillCount`/`PartyKillsByTarget`/`PartyKillsByKiller` stay `mine`, not summed** ·
+  correctness requirement, not a style preference: your own log already counts a
+  teammate's kill as a third-party line, so summing would double it.
+- **Archives and `history.db` keep recording the watched character ALONE** · record the
+  duo's combined totals, since that is what the widget shows during play · kept solo
+  (reversible, privacy-safe): a teammate's session is not persisted or transmitted
+  without their say, and a session record that always matches what the widget showed
+  live is a promise this redesign does not make either way (the widget's live number
+  already includes rates the archived snapshot never re-derives).
+- **A teammate's data is never labelled as duo-provenance on the widget itself** (a kill
+  count that silently doubles when a teammate is picked) · left as a documented gap,
+  Part 7 item 1 of the approved plan — a small provenance marker is a real product/design
+  question outside this pass's scope, not resolved here.
+
 ## 2026-09-20 — STANDING: the `exo-experiment:` tag index (re-pinned by DRA-231)
 
 **This block never rotates.** Plan §10.1 makes the tag below the thing the M0-exit doctrine

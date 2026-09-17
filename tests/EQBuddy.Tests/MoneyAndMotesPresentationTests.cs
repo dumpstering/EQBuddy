@@ -33,6 +33,44 @@ public class MoneyAndMotesPresentationTests
         Assert.Contains("per active hour", lines[2]);
     }
 
+    /// <summary>
+    /// C4: <c>CorpseCopper</c> is duo-wide (summed by <c>DuoStats.Combine</c>) but
+    /// <c>CoinDrops</c>/<c>BiggestDrop</c> stay primary-only (A4's decision) — so a
+    /// duo where only the teammate looted read "Corpses 10p (0 drops, biggest
+    /// 0c)", a true total paired with qualifiers that flatly contradict it.
+    /// <c>Mate</c> non-null is the duo marker; the fix hides the qualifiers rather
+    /// than inventing a per-corpse correlation the redesign never tracked.
+    /// </summary>
+    [Fact]
+    public void TheCorpseQualifiersAreHiddenInDuoModeWhenTheyWouldContradictTheTotal()
+    {
+        var lines = MoneyPresentation.SummaryLines(new StatsSnapshot
+        {
+            CorpseCopper = 10000,   // duo-wide total — the teammate looted it all
+            CoinDrops = 0,          // primary-only — mine alone, genuinely zero
+            BiggestDrop = 0,
+            Mate = new StatsSnapshot(),   // marks this as a combined duo snapshot
+        });
+
+        Assert.Contains("Corpses", lines[0]);
+        Assert.DoesNotContain("drops", lines[0]);
+        Assert.DoesNotContain("biggest", lines[0]);
+    }
+
+    /// <summary>Solo (no teammate) is unaffected — the qualifiers are still yours
+    /// alone and still true.</summary>
+    [Fact]
+    public void TheCorpseQualifiersStillShowSoloWhenTheyCannotContradictAnything()
+    {
+        var lines = MoneyPresentation.SummaryLines(new StatsSnapshot
+        {
+            CorpseCopper = 12345, CoinDrops = 7, BiggestDrop = 5000,
+        });
+
+        Assert.Contains("7 drops", lines[0]);
+        Assert.Contains("biggest", lines[0]);
+    }
+
     /// <summary>"Last 0m: 0" reads as a dead session rather than as a measurement nobody
     /// has taken yet, so the line is absent instead of empty.</summary>
     [Fact]

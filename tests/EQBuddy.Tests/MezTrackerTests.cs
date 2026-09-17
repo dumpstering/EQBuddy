@@ -682,4 +682,168 @@ public class MezTrackerTests
         t.Apply(Ev(154, "Your Longsleep spell has worn off of an orc pawn."));
         Assert.Equal(150, t.LearnedDurations["Longsleep"], 0);               // the fade still taught
     }
+
+    // ---- Step 2: source-aware Apply + failed-cast cancellation (plan Part 4) ----
+
+    [Fact]
+    public void ATeammatesCastIsRememberedUnderTheirNameNotYours()
+    {
+        // Plan Part 4a defect 1: MezTracker.Apply hardcoded "You" as the caster for
+        // every SpellCastEvent, so a teammate's own cast (fed via the new source-aware
+        // overload) was recorded under YOUR name — the exact mechanism that would have
+        // let YOUR worn-off wrongly end a chip THEY cast (see the next test).
+        var t = new MezTracker();
+        t.Apply(Ev(0, "You begin casting Mesmerization."), "Buddy");
+        t.Apply(Ev(1, "a skeleton has been mesmerized."));
+
+        var chip = Assert.Single(t.Snapshot(T0.AddSeconds(2)));
+        Assert.Equal("Buddy", chip.Caster);
+    }
+
+    [Fact]
+    public void YourWornOffDoesNotEndAChipTheTeammateCast()
+    {
+        // Plan Part 4b: OnWornOff must require the active entry's Caster to equal the
+        // event's own source. A worn-off line is caster-private — only the CASTER's
+        // log prints "Your X spell has worn off of Y" — so a fade in the WATCHED
+        // character's own log must never end a chip a TEAMMATE cast.
+        var t = new MezTracker();
+        t.Apply(Ev(0, "You begin casting Mesmerization."), "Buddy");
+        t.Apply(Ev(1, "a skeleton has been mesmerized."));
+        // The WATCHED character's own worn-off line — a different caster than "Buddy".
+        t.Apply(Ev(2, "Your Mesmerization spell has worn off of a skeleton."));
+
+        Assert.Single(t.Snapshot(T0.AddSeconds(3)));   // the chip survives — it isn't yours to end
+    }
+
+    [Fact]
+    public void AFizzledMezDoesNotExplainAnotherCastersLanding()
+    {
+        // Plan Part 4a defect 2: nothing in Apply's switch canceled a fizzled cast, so
+        // it stayed in _recentCasts for the full CastToLand window (8s) and — being
+        // the temporally LATEST matching entry — could claim a landing a DIFFERENT
+        // caster's still-in-flight cast actually produced.
+        var t = new MezTracker();
+        t.Apply(Ev(0, "You begin casting Mesmerization."), "Buddy");   // Buddy's cast — genuinely lands
+        t.Apply(Ev(1, "You begin casting Mesmerization."));            // your own cast — about to fail
+        t.Apply(Ev(2, "Your Mesmerization spell fizzles!"));           // ...and it fizzles
+        t.Apply(Ev(3, "a skeleton has been mesmerized."));             // the landing is BUDDY's mez
+
+        var chip = Assert.Single(t.Snapshot(T0.AddSeconds(4)));
+        Assert.Equal("Buddy", chip.Caster);
+    }
+
+    // ---- Repair round A5: the caster check must live in the SELECTION, not a
+    // post-hoc rejection of whatever name-only match came first. ----
+
+    [Fact]
+    public void ATeammatesFadeEndsTheirOwnChipAndNeverYoursOfTheSameName()
+    {
+        // Two DISTINCT creatures sharing a name, mezzed by two different casters —
+        // your OLDER chip must survive the teammate's fade of THEIR OWN, newer one.
+        // The post-hoc guard picked the earliest-LANDED same-named entry (yours) by
+        // name alone, rejected it for a caster mismatch, and left the teammate's
+        // chip — the one that actually should have ended — lingering forever.
+        var t = new MezTracker();
+        t.Apply(Ev(0, "You begin casting Mesmerization."));                   // your cast
+        t.Apply(Ev(1, "a skeleton has been mesmerized."));                    // your chip (Caster "You")
+        t.Apply(Ev(3, "You begin casting Mesmerization."), "Buddy");          // teammate's cast
+        t.Apply(Ev(4, "a skeleton has been mesmerized."));                    // teammate's chip (Caster "Buddy")
+
+        Assert.Equal(2, t.Snapshot(T0.AddSeconds(5)).Count(m => m.Target == "Skeleton"));
+
+        t.Apply(Ev(6, "Your Mesmerization spell has worn off of a skeleton."), "Buddy");
+
+        var remaining = t.Snapshot(T0.AddSeconds(7)).Where(m => m.Target == "Skeleton").ToList();
+        var chip = Assert.Single(remaining);
+        Assert.Equal("You", chip.Caster);   // yours is the one still standing
+    }
+
+    [Fact]
+    public void ANonAoeCastIsConsumedAfterOneLandingAndCannotExplainASecond()
+    {
+        // Related risk: OnLanding always took the newest cast and never consumed it,
+        // so two concurrent single-target casts could both resolve to the SAME
+        // caster's one cast. A non-AoE spell explains exactly one landing.
+        var t = new MezTracker([new MezSpellInfo { Name = "Mesmerize", Aoe = false, DurationSeconds = 24 }]);
+        t.Apply(Ev(0, "You begin casting Mesmerize."));
+        t.Apply(Ev(1, "an orc pawn has been mesmerized."));
+        t.Apply(Ev(2, "an orc guard has been mesmerized."));   // a DIFFERENT target — nobody visible cast this
+
+        var chips = t.Snapshot(T0.AddSeconds(3));
+        Assert.Contains(chips, m => m.Target == "Orc pawn");
+        Assert.DoesNotContain(chips, m => m.Target == "Orc guard");
+    }
+
+    [Fact]
+    public void AnAoeCastIsNotConsumedAndStillExplainsEveryLanding()
+    {
+        var t = new MezTracker([new MezSpellInfo { Name = "Shield of Thistles", Aoe = true, DurationSeconds = 24 }]);
+        t.Apply(Ev(0, "You begin casting Shield of Thistles."));
+        t.Apply(Ev(1, "an orc pawn has been mesmerized."));
+        t.Apply(Ev(1, "an orc guard has been mesmerized."));
+
+        var chips = t.Snapshot(T0.AddSeconds(2));
+        Assert.Contains(chips, m => m.Target == "Orc pawn");
+        Assert.Contains(chips, m => m.Target == "Orc guard");
+    }
+
+    /// <summary>
+    /// Correction to the earlier report on this round: the caster-scoped selection
+    /// fixes are NOT teammate-only — bystander casts (<see cref="OtherCastEvent"/>,
+    /// "Rival begins casting …") were already tracked pre-redesign (class summary:
+    /// "from ANY group member's log"), so a purely solo watcher — never calling the
+    /// two-arg <c>Apply(evt, source)</c> overload at all, exactly like every pre-
+    /// existing solo test in this file — sees the same fix. Before this round, two
+    /// REAL players in an ordinary (non-EQBuddy) group both mezzing a same-named
+    /// creature collapsed into one chip the instant the second landing refreshed the
+    /// first by name alone; a later fade could then close the wrong player's chip.
+    /// This proves the fixed behaviour, honestly labelled as a solo-visible change.
+    /// </summary>
+    [Fact]
+    public void TwoRealCastersOnTheSameNamedCreatureGetSeparateChipsSolo()
+    {
+        var t = new MezTracker();
+        t.Apply(Ev(0, "Rival begins casting Mesmerization."));
+        t.Apply(Ev(1, "a skeleton has been mesmerized."));       // Rival's chip
+        t.Apply(Ev(3, "Otherguy begins casting Mesmerization."));
+        t.Apply(Ev(4, "a skeleton has been mesmerized."));       // a DIFFERENT skeleton, Otherguy's
+
+        var skeletons = t.Snapshot(T0.AddSeconds(5)).Where(m => m.Target == "Skeleton").ToList();
+        Assert.Equal(2, skeletons.Count);
+        Assert.Contains(skeletons, m => m.Caster == "Rival");
+        Assert.Contains(skeletons, m => m.Caster == "Otherguy");
+    }
+
+    /// <summary>
+    /// C6: <c>_unpairedBreaks</c> was keyed by NAME alone, with no record of which
+    /// EVENT KIND (WornOff vs. Awakened) left the token — so when two DIFFERENT
+    /// casters' same-named creatures both fade NATURALLY (two WornOff lines, no
+    /// Awakened line for either) within the 2-second pairing window, the second
+    /// fade's own token check found the first fade's leftover token, wrongly
+    /// treated it as "the other half of MY break", and returned early WITHOUT ever
+    /// reaching the caster-scoped entry removal — leaving the second caster's chip
+    /// lingering forever. A pairing is only ever ONE real break reported by TWO
+    /// DIFFERENT KINDS of line; two WornOffs are two DIFFERENT breaks and must
+    /// never consume each other's token.
+    /// </summary>
+    [Fact]
+    public void TwoCastersTwoNaturalFadesOfSameNamedCreaturesBothDropTheirOwnChip()
+    {
+        var t = new MezTracker();
+        t.Apply(Ev(0, "You begin casting Mesmerization."));
+        t.Apply(Ev(1, "a skeleton has been mesmerized."));                     // You's skeleton
+        t.Apply(Ev(3, "You begin casting Mesmerization."), "Buddy");
+        t.Apply(Ev(4, "a skeleton has been mesmerized."));                     // Buddy's skeleton — a DIFFERENT creature
+
+        Assert.Equal(2, t.Snapshot(T0.AddSeconds(5)).Count(m => m.Target == "Skeleton"));
+
+        // BOTH fade NATURALLY, 1 second apart (inside BreakPairWindow) — no
+        // Awakened line for either. Two distinct breaks, not one break's two halves.
+        t.Apply(Ev(10, "Your Mesmerization spell has worn off of a skeleton."));
+        t.Apply(Ev(11, "Your Mesmerization spell has worn off of a skeleton."), "Buddy");
+
+        var remaining = t.Snapshot(T0.AddSeconds(12)).Where(m => m.Target == "Skeleton").ToList();
+        Assert.Empty(remaining);   // both chips gone — neither is left orphaned by a false pairing
+    }
 }
