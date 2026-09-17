@@ -31,6 +31,44 @@ where each of its assertions went.
 | `Log=1` is forced in `eqclient.ini`; stale logs truncate only while the game is closed | **Auto** — `EqConfigTests` |
 | A log folder is found from the registry, with Wine/CrossOver prefixes handled | **Auto** — `LogFolderDetectionTests` |
 
+## 1b. The teammate log (duo sessions)
+
+A teammate's log (Options → Behavior) is tailed alongside the primary and drives a
+SECOND, fully isolated `SessionStats` instance — see `docs/Architecture.md`'s "Duo /
+teammate isolation" for the full model and the field-by-field combine table.
+
+| Expectation | Held by |
+|---|---|
+| **The teammate's own `SessionStats` never gets a durable store, a subscriber, or the watched character's identity** — the invariant that makes unconditional `Apply` safe by construction | **Auto** — `TeammateIsolationTests.TeammateStatsCarriesNoDurableStoreAndNoSubscriber` (reflection over every store-typed property and every event) |
+| Every parsed teammate event applies to their OWN instance unconditionally; none of it ever reaches the watched character's own kills, loot, faction, class inference, or version counter | **Auto** — `TeammateActorLocalGuardTests` (the six-plus named misattribution families, rewritten against the isolated-instance design), `TeammateIsolationTests.ATeammateEventNeverBumpsTheWatchedSessionsVersion` |
+| A teammate's loot never appears in the watched character's own inventory overlay (`ItemsGainedSince`) | **Auto** — `TeammateIsolationTests.ATeammatesLootDoesNotAppearInYourInventoryOverlay` |
+| **`DuoStats.Combine` classifies EVERY `StatsSnapshot` property as combined or pass-through — a new property shipped unclassified fails the build** | **Auto** — `DuoStatsTests.EveryStatsSnapshotPropertyIsClassifiedAsCombinedOrPassedThrough` |
+| Kills/damage/heals/loot/money sum; XP, faction, and per-character progress never pool; `PartyKillCount` stays yours (would double-count); rates recompute rather than summing two rates | **Auto** — `DuoStatsTests.DuoKillsSumButPartyKillsDoNot`, `.DuoXpIsNotSummed`, `.DuoDpsRecomputesRatherThanSummingRates` |
+| The archiver, the 5-minute checkpoint, and the wiki pack all record the watched character ALONE — never the duo-combined view | **Auto** — `DuoStatsTests.TheArchiverStillRecordsTheWatchedCharacterAlone` |
+| Desktop AND Mobile duo versions move with either actor (2026-09-17: Mobile now carries duo totals, reversing the earlier primary-only call); the pump's gate and its reconciliation tick's `Observe` are always fed the SAME version (`DuoVersion`), with recent-window and tracked-rule arguments preserved | **Auto** — `DuoStatsTests.TheDuoVersionMovesWhenOnlyTheTeammateMoves`, `TeammateReviewRegressionTests.LiveActivityAndVersionSurviveCarryFolding`, `MobileDuoPumpVersionTests` (reproduces the gate/observe mismatch leak directly, then proves `DuoVersion` on both sides closes it, across all four rollover cases); Mobile call sites checked by static inspection — `MainWindow.xaml.cs` has no test project (§5) |
+| A teammate's own cast/worn-off/fizzle is attributed to THEM, not folded under "You" — the shared mez tracker is source-aware | **Auto** — `MezTrackerTests.ATeammatesCastIsRememberedUnderTheirNameNotYours`, `.YourWornOffDoesNotEndAChipTheTeammateCast`, `.AFizzledMezDoesNotExplainAnotherCastersLanding` |
+| A mid-session teammate pick does NOT replay the primary log — the isolation makes the old backward-clock hazard structurally impossible | **Auto** — `LogWatcherTests.AMidSessionTeammatePickDoesNotReplayThePrimary`, `.TeammateHistoryOlderThanYourSessionCannotWipeIt` |
+| A teammate path is refused for being the primary log, or inside the configured Logs folder, including through a hard link/junction/symlink — checked CONTINUOUSLY (a Logs-folder change, or a synced file that appears later, is caught even with no re-Select in between) | **Auto** — `TeammateLogPickerTests`, `FileIdentityTests`, `LogWatcherTests.ALogsFolderChangeClearsATeammatePathThatIsNowInsideItEvenWithoutASelect`, `.ATeammateFileThatAppearsInsideTheLogsFolderIsDroppedOnItsFirstRead` |
+| When the watched character's OWN session rolls, the teammate's totals restart with it — and the primary's initial full-file ingest replaying historical rolls resets the teammate on EVERY one of those rolls too, not only once ingest finishes (repair round C2: the old guard skipped every historical roll while ingest was still in progress, letting a teammate kill from a session the primary's log had already moved past survive into whatever became the current session once replay finished) | **Auto** — `LogWatcherTests.AWatchedSessionRolloverResetsTheTeammateTotals`, `.TheInitialIngestReplayResetsTheTeammateOnEveryHistoricalRollToo`, `.ATeammateKillAfterTheFinalHistoricalRollSurvivesInitialIngest` |
+| **Documented gap (v1, deferred):** per-creature "Mob farming" (`Mobs`) is not merged across the duo — a mob only your teammate solos never appears in it | Documented limit — `DuoStats`'s own class doc, `DECISIONS.md` 2026-09-07 |
+
+### 2026-09-07 review repairs
+
+| Expectation | Held by |
+|---|---|
+| Equal-clock repeated kills match once per occurrence; either clock direction and a delayed sync poll can supply the second half | **Auto** — `TeammateReviewRegressionTests.EqualClocksMatchEachRepeatedKillOnce`, `.ExcessClockOffsetIsFoundInEitherDirection`, `.TeammateKillArrivingInALaterPollStillMatches` |
+| A clock difference above two minutes visibly pauses desktop duo totals; an unknown offset is described as unknown | **Auto** — `TeammateReviewRegressionTests.UnknownAndAcceptableClockOffsetsDoNotShowARefusal`; real WPF wiring: `EQBuddy.E2E/TeammateWarningTests` |
+| Explicit reselect/character switch discards old carry; clearing carry invalidates a cached pair | **Auto** — `TeammateReviewRegressionTests.ReselectingPrimaryDoesNotAccumulateOldCarry`, `.SwitchingCharactersClearsBothLiveAndCarriedTeammateTotals`, `.ClearingCarryInvalidatesAnAlreadyMemoizedPair` |
+| Live DPS/recent rates/effort survive a historical fold; overlapping carried combat is still unioned | **Auto** — `TeammateReviewRegressionTests.LiveActivityAndVersionSurviveCarryFolding`, `.CarriedCombatSpansStillUnionWithPrimaryHistory` |
+| Concurrent primary selection cannot install the primary as its own teammate | **Auto** — `TeammateReviewRegressionTests.ConcurrentPrimarySelectionCannotInstallASelfFeed` (synchronized validation interleaving) |
+| Actor keys render as readable labels while preserving literal spell parentheses | **Auto** — `TeammateReviewRegressionTests.ActorLabelsAreReadableAndLiteralParenthesesArePreserved` |
+| A failed junction setup cannot silently pass the file-appearance test | **Auto** — `LogWatcherTests.ATeammateFileThatAppearsInsideTheLogsFolderIsDroppedOnItsFirstRead` now fails setup explicitly |
+
+Clock matching is a bounded, one-use FIFO join by target name. The logs contain no
+unique creature/death ID; missing occurrences of repeated names remain ambiguous.
+Offsets are estimated, not used to normalize timestamps. After upstream trims combat
+spans, the discarded portion's overlap remains unknowable and is conservatively added.
+
 ## 2. What the numbers mean
 
 | Expectation | Held by |
@@ -507,7 +545,7 @@ so it can be pinned without an audio device. Both UIs obey the same plan.
 
 ## 5. The gap — read this before trusting the suite
 
-**`src/EQBuddy` (the WPF app, 27,863 lines across 91 files) has no automated coverage.
+**`src/EQBuddy` (the WPF app, 29,802 lines across 93 files) has no automated coverage.
 No test project references it.** (Size pinned by `DocumentationSizeTests` — it was still
 claiming 14,432 across 37 on 2026-08-24, understating the untested surface by a third.)
 

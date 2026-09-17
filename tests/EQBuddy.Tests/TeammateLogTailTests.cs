@@ -29,8 +29,7 @@ public class TeammateLogTailTests
                 "[Sat Jul 18 20:04:00 2026] You have slain orc sentry!",
                 "[Sat Jul 18 20:06:00 2026] You have slain orc centurion!");
 
-            var stats = new SessionStats();
-            var tail = new TeammateLogTail(path, stats, () => null);
+            var tail = new TeammateLogTail(path, () => null);
 
             Assert.True(tail.Fill());
 
@@ -38,12 +37,12 @@ public class TeammateLogTailTests
             // before it, so the 20:04 line itself stays buffered (see
             // ALineStampedExactlyAtTheBoundStaysBuffered) and only the 20:02 kill lands.
             tail.DrainBefore(new DateTime(2026, 7, 18, 20, 4, 0));
-            var snap = stats.Snapshot();
+            var snap = tail.Stats.Snapshot();
             Assert.Equal(1, snap.YourKillCount);
             Assert.Equal(new DateTime(2026, 7, 18, 20, 2, 0), snap.LastEventTime);
 
             tail.DrainBefore(DateTime.MaxValue);
-            Assert.Equal(3, stats.Snapshot().YourKillCount);
+            Assert.Equal(3, tail.Stats.Snapshot().YourKillCount);
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { } }
     }
@@ -63,15 +62,14 @@ public class TeammateLogTailTests
                 "[Sat Jul 18 20:02:00 2026] You have slain orc guard!",
                 "[Sat Jul 18 20:04:00 2026] You have slain orc sentry!");
 
-            var stats = new SessionStats();
-            var tail = new TeammateLogTail(path, stats, () => null);
+            var tail = new TeammateLogTail(path, () => null);
             Assert.True(tail.Fill());
 
             tail.DrainBefore(new DateTime(2026, 7, 18, 20, 4, 0));
-            Assert.Equal(1, stats.Snapshot().YourKillCount);   // only the strictly-earlier line
+            Assert.Equal(1, tail.Stats.Snapshot().YourKillCount);   // only the strictly-earlier line
 
             tail.DrainBefore(DateTime.MaxValue);
-            Assert.Equal(2, stats.Snapshot().YourKillCount);   // the boundary line now lands
+            Assert.Equal(2, tail.Stats.Snapshot().YourKillCount);   // the boundary line now lands
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { } }
     }
@@ -132,8 +130,7 @@ public class TeammateLogTailTests
                 var path = Path.Combine(dir, "eqlog_Buddy_freeport.txt");
                 File.WriteAllLines(path, lines);
 
-                var stats = new SessionStats();
-                var tail = new TeammateLogTail(path, stats, () => null);
+                var tail = new TeammateLogTail(path, () => null);
                 Assert.True(tail.Fill());
 
                 var sw = Stopwatch.StartNew();
@@ -143,7 +140,7 @@ public class TeammateLogTailTests
                     tail.DrainBefore(timestamps[i].AddTicks(1));
                 sw.Stop();
 
-                Assert.Equal(n, stats.Snapshot().YourKillCount);
+                Assert.Equal(n, tail.Stats.Snapshot().YourKillCount);
                 return sw.Elapsed.TotalMilliseconds;
             }
             finally { try { Directory.Delete(dir, recursive: true); } catch { } }
@@ -163,13 +160,12 @@ public class TeammateLogTailTests
             var line = "[Sat Jul 18 20:02:00 2026] --You have looted a Café Ring from orc guard's corpse.--\n";
             File.WriteAllBytes(path, Encoding.Latin1.GetBytes(line));
 
-            var stats = new SessionStats();
-            var tail = new TeammateLogTail(path, stats, () => null);
+            var tail = new TeammateLogTail(path, () => null);
 
             Assert.True(tail.Fill());
             tail.DrainBefore(DateTime.MaxValue);
 
-            var snap = stats.Snapshot();
+            var snap = tail.Stats.Snapshot();
             Assert.Contains(snap.Loot, l => l.Item.Contains('é'));
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { } }
@@ -187,6 +183,11 @@ public class TeammateLogTailTests
         // and it ends the file in an UNTERMINATED split line (so _remainder is
         // non-empty at Reset() time too), then checks the exact count survives the
         // replay with neither the buffered lines nor the remainder double-applied.
+        //
+        // Step 3: Reset() also resets Stats now (a primary re-Select restarts duo
+        // totals with it — see Reset()'s own doc) — so the ONE kill applied before
+        // Reset() is wiped BY Reset() itself, not carried forward. The exact count
+        // that matters is still "replayed exactly once, not twice".
         var dir = Directory.CreateTempSubdirectory("eqbuddy-tail-").FullName;
         try
         {
@@ -197,23 +198,22 @@ public class TeammateLogTailTests
                 "[Sat Jul 18 20:06:00 2026] You have slain orc centurion!\n" +
                 "[Sat Jul 18 20:08:00 2026] You have sla");   // unterminated — no trailing newline
 
-            var stats = new SessionStats();
-            var tail = new TeammateLogTail(path, stats, () => null);
+            var tail = new TeammateLogTail(path, () => null);
 
             Assert.True(tail.Fill());
             // Strict bound: only the 20:02 line is before it, so the 20:04 and 20:06
             // lines stay buffered — undispatched — right when Reset() is about to hit.
             tail.DrainBefore(new DateTime(2026, 7, 18, 20, 4, 0));
-            Assert.Equal(1, stats.Snapshot().YourKillCount);
+            Assert.Equal(1, tail.Stats.Snapshot().YourKillCount);
 
-            tail.Reset();
+            tail.Reset();   // wipes the 1 kill above along with the buffer/offset/remainder
             Assert.True(tail.Fill());
             tail.DrainBefore(DateTime.MaxValue);
-            // (lines drained before Reset) + (every complete line in the file,
-            // replayed exactly once from the top) = 1 + 3. An offset-only Reset would
-            // instead double-dispatch the 20:04/20:06 lines that were left buffered
-            // (they'd be applied once before Reset and once more after), landing on 6.
-            Assert.Equal(4, stats.Snapshot().YourKillCount);
+            // Every complete line in the file, replayed exactly once from the top = 3.
+            // An offset-only Reset would instead double-dispatch the 20:04/20:06 lines
+            // that were left buffered (applied once before Reset, once more after),
+            // landing on 1 (pre-Reset) + 6 (double-counted replay) = 7, not 3.
+            Assert.Equal(3, tail.Stats.Snapshot().YourKillCount);
 
             // The unterminated trailing line still hasn't split — completing it now
             // must dispatch it exactly once: not zero (lost with the old remainder)
@@ -221,7 +221,7 @@ public class TeammateLogTailTests
             File.AppendAllText(path, "in orc pawn!\n");
             Assert.True(tail.Fill());
             tail.DrainBefore(DateTime.MaxValue);
-            Assert.Equal(5, stats.Snapshot().YourKillCount);
+            Assert.Equal(4, tail.Stats.Snapshot().YourKillCount);
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { } }
     }
@@ -229,8 +229,7 @@ public class TeammateLogTailTests
     [Fact]
     public void MissingFileIsQuietlyEmpty()
     {
-        var stats = new SessionStats();
-        var tail = new TeammateLogTail(@"C:\nope\eqlog_Buddy_freeport.txt", stats, () => null);
+        var tail = new TeammateLogTail(@"C:\nope\eqlog_Buddy_freeport.txt", () => null);
 
         Assert.False(tail.Fill());
         Assert.Null(tail.LastError);
@@ -245,8 +244,7 @@ public class TeammateLogTailTests
             var path = WriteLog(dir, "eqlog_Buddy_freeport.txt",
                 "[Sat Jul 18 20:02:00 2026] You have slain orc guard!");
 
-            var stats = new SessionStats();
-            var tail = new TeammateLogTail(path, stats, () => null);
+            var tail = new TeammateLogTail(path, () => null);
 
             Assert.True(tail.Fill());
             Assert.False(tail.Fill());   // nothing new since the first read
@@ -272,17 +270,16 @@ public class TeammateLogTailTests
                 "[Sat Jul 18 20:04:00 2026] You slash orc pawn for 10 points of damage.", // DamageDealtEvent — IS, throws
                 "[Sat Jul 18 20:06:00 2026] You have slain orc centurion!");        // AFTER the thrower — must not survive
 
-            var stats = new SessionStats();
-            var tail = new TeammateLogTail(path, stats, () => throw new InvalidOperationException());
+            var tail = new TeammateLogTail(path, () => throw new InvalidOperationException());
 
             Assert.True(tail.Fill());
             Assert.Throws<InvalidOperationException>(() => tail.DrainBefore(DateTime.MaxValue));
-            Assert.Equal(1, stats.Snapshot().YourKillCount);   // the kill line applied before the throw
+            Assert.Equal(1, tail.Stats.Snapshot().YourKillCount);   // the kill line applied before the throw
 
             // Neither the poisoned line nor the kill line buffered AFTER it may linger:
             // a second call must not throw again, and must not apply either kill.
             tail.DrainBefore(DateTime.MaxValue);
-            Assert.Equal(1, stats.Snapshot().YourKillCount);
+            Assert.Equal(1, tail.Stats.Snapshot().YourKillCount);
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { } }
     }
@@ -304,16 +301,15 @@ public class TeammateLogTailTests
                 "[Sat Jul 18 20:04:00 2026] You slash orc pawn for 10 points of damage.", // admitted for mez — throws
                 "[Sat Jul 18 20:06:00 2026] You have slain orc centurion!");
 
-            var stats = new SessionStats();
-            var tail = new TeammateLogTail(path, stats, () => throw new IOException("ledger write failed"));
+            var tail = new TeammateLogTail(path, () => throw new IOException("ledger write failed"));
 
             Assert.True(tail.Fill());
             var ex = Assert.Throws<InvalidOperationException>(() => tail.DrainBefore(DateTime.MaxValue));
             Assert.IsType<IOException>(ex.InnerException);
-            Assert.Equal(1, stats.Snapshot().YourKillCount);
+            Assert.Equal(1, tail.Stats.Snapshot().YourKillCount);
 
             tail.DrainBefore(DateTime.MaxValue);              // the whole batch was dropped
-            Assert.Equal(1, stats.Snapshot().YourKillCount);
+            Assert.Equal(1, tail.Stats.Snapshot().YourKillCount);
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { } }
     }
@@ -334,13 +330,12 @@ public class TeammateLogTailTests
                 "[Sat Jul 18 20:04:00 2026] You have slain orc sentry!\n" +
                 "[Sat Jul 18 20:06:00 2026] You have sla");   // unterminated split line
 
-            var stats = new SessionStats();
-            var tail = new TeammateLogTail(path, stats, () => null);
+            var tail = new TeammateLogTail(path, () => null);
 
             Assert.True(tail.Fill());   // buffers 2 complete lines; the split one waits in _remainder
             tail.Discard();
             tail.DrainBefore(DateTime.MaxValue);
-            Assert.Equal(0, stats.Snapshot().YourKillCount);   // both buffered lines were dropped, not just deferred
+            Assert.Equal(0, tail.Stats.Snapshot().YourKillCount);   // both buffered lines were dropped, not just deferred
 
             // Offset kept: no new bytes to read, so Fill reports nothing new rather
             // than re-splitting the same two lines a second time.
@@ -351,7 +346,7 @@ public class TeammateLogTailTests
             File.AppendAllText(path, "in orc centurion!\n");
             Assert.True(tail.Fill());
             tail.DrainBefore(DateTime.MaxValue);
-            Assert.Equal(1, stats.Snapshot().YourKillCount);
+            Assert.Equal(1, tail.Stats.Snapshot().YourKillCount);
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { } }
     }
@@ -376,17 +371,16 @@ public class TeammateLogTailTests
                 "[Sat Jul 18 20:04:00 2026] You slash orc pawn for 10 points of damage.",
                 "[Sat Jul 18 20:06:00 2026] You have slain orc centurion!");
 
-            var stats = new SessionStats();
             var resetDone = false;
             TeammateLogTail? tail = null;
-            tail = new TeammateLogTail(path, stats, () =>
+            tail = new TeammateLogTail(path, () =>
             {
                 if (!resetDone)
                 {
                     resetDone = true;
-                    // Mirrors what a real re-entrant Select() does: the whole session,
-                    // stats included, is torn down and replayed from scratch mid-drain.
-                    stats.Reset();
+                    // Mirrors what a real re-entrant Select() does: the whole session
+                    // (this tail's OWN Stats, since Step 3) is torn down and replayed
+                    // from scratch mid-drain. Reset() resets Stats too.
                     tail!.Reset();
                     throw new InvalidOperationException();
                 }
@@ -399,13 +393,13 @@ public class TeammateLogTailTests
             // The re-entrant Reset() must win: no stale _head write, no Compact() over
             // a buffer generation no longer matches, and the kill from before the
             // throw was wiped by the SAME reset that cleared the tail.
-            Assert.Equal(0, stats.Snapshot().YourKillCount);
+            Assert.Equal(0, tail.Stats.Snapshot().YourKillCount);
 
             // A subsequent Fill + DrainBefore(MaxValue) must replay the file exactly
             // once from the top, with no exception and no double-dispatch.
             Assert.True(tail.Fill());
             tail.DrainBefore(DateTime.MaxValue);
-            Assert.Equal(2, stats.Snapshot().YourKillCount);   // the file's two kills, once each
+            Assert.Equal(2, tail.Stats.Snapshot().YourKillCount);   // the file's two kills, once each
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { } }
     }
@@ -414,77 +408,65 @@ public class TeammateLogTailTests
     public void AReentrantResetTriggeredFromStatsApplyStopsTheLaterConsumersInTheSameLine()
     {
         // Regression: the generation check used to run ONCE, at the bottom of the
-        // loop body (after ObserveRawLine). SessionStats.SessionRolledOver fires
-        // SYNCHRONOUSLY from inside _stats.Apply(evt) itself (a >60-minute forward
-        // gap rolls the session before Apply returns) — a re-entrant Reset() from
-        // that callback returns NORMALLY, with no exception to unwind through, so a
-        // check only at the bottom would let the SAME iteration go on to call
-        // ObserveRawLine against a SessionStats the very call above it just reset.
-        // The fix checks generation immediately after EACH of the three consumer
-        // calls, so this line's own Apply(evt) catches the reset itself.
+        // loop body. SessionStats.SessionRolledOver fires SYNCHRONOUSLY from inside
+        // _stats.Apply(evt) itself (a >60-minute forward gap rolls the session before
+        // Apply returns) — a re-entrant Reset() from that callback returns NORMALLY,
+        // with no exception to unwind through, so a check only at the bottom would
+        // let the SAME iteration go on to call the mez tracker against a SessionStats
+        // the very call above it just reset. The fix checks generation immediately
+        // after EACH consumer call, so this line's own Apply(evt) catches the reset
+        // before the mez factory is even reached for it. (Finding 5 removed the
+        // third, ObserveRawLine-based consumer this test used to observe through —
+        // it now observes via the mez factory instead, since DamageTakenEvent is
+        // admitted for both stats and mez.)
         var dir = Directory.CreateTempSubdirectory("eqbuddy-tail-").FullName;
         try
         {
             var path = WriteLog(dir, "eqlog_Buddy_freeport.txt",
                 "[Sat Jul 18 20:02:00 2026] You have slain orc guard!",
-                "[Sat Jul 18 21:03:00 2026] You have slain orc sentry!",     // >60 min gap — rolls the session INSIDE Apply
-                "[Sat Jul 18 21:04:00 2026] You have slain orc centurion!"); // buffered after the resetter — must not survive
+                "[Sat Jul 18 21:03:00 2026] Orc sentry hits YOU for 5 points of damage.",     // >60 min gap — rolls the session INSIDE Apply; admitted for BOTH stats and mez
+                "[Sat Jul 18 21:04:00 2026] Orc centurion hits YOU for 5 points of damage."); // buffered after the resetter — must not survive
 
-            var stats = new SessionStats();
-            var textMatches = new List<string>();
-            stats.TextMatched += raw => textMatches.Add(raw.Line);
-            // A rule for each line that must never reach ObserveRawLine once the
-            // mid-batch reset fires: if the generation check did not run immediately
-            // after _stats.Apply(evt), ObserveRawLine would still see them and
-            // refill the patterns against a session Apply just wiped.
-            stats.RefreshTextPatterns(
-            [
-                new TrackedRule { Name = "sentry", Pattern = "orc sentry", Kind = WatchKind.Text },
-                new TrackedRule { Name = "centurion", Pattern = "orc centurion", Kind = WatchKind.Text },
-            ]);
-
+            var mezCalls = 0;
             var resetDone = false;
-            TeammateLogTail? tail = null;
-            stats.SessionRolledOver += () =>
+            // Returning null still proves the point: the factory itself only runs
+            // when TeammateFeed.AdmitForMez(evt) is reached for a given line, which
+            // is exactly the code path a missed generation check would let run anyway.
+            var tail = new TeammateLogTail(path, () => { mezCalls++; return null; });
+            tail.Stats.SessionRolledOver += () =>
             {
                 if (resetDone) return;
                 resetDone = true;
-                // Mirrors what a real re-entrant Select() does: the whole session,
-                // stats included, is torn down and replayed from scratch mid-drain —
-                // triggered by SessionStats itself, not by the mez callback.
-                stats.Reset();
-                tail!.Reset();
+                // Mirrors what a real re-entrant Select() does: the whole session
+                // (this tail's OWN Stats, since Step 3) is torn down and replayed
+                // from scratch mid-drain — triggered by SessionStats itself, not by
+                // the mez callback. Reset() resets Stats too.
+                tail.Reset();
             };
-            tail = new TeammateLogTail(path, stats, () => null);
 
             Assert.True(tail.Fill());
-            // No throw this time: Apply's own SessionRolledOver handler resets stats
-            // and the tail synchronously, then returns normally to the loop. The
-            // generation check placed right after _stats.Apply(evt) must catch this
+            // No throw this time: Apply's own SessionRolledOver handler resets the
+            // tail's Stats synchronously, then returns normally to the loop. The
+            // generation check placed right after Stats.Apply(evt) must catch this
             // on its own, with no exception to force an early exit.
             tail.DrainBefore(DateTime.MaxValue);
 
-            // The re-entrant Reset() must win: the kill that rolled the session (orc
-            // sentry) was wiped by the SAME stats.Reset() its own roll handler ran,
-            // and the line buffered after it (orc centurion) never got a chance to
-            // apply at all.
-            Assert.Equal(0, stats.Snapshot().YourKillCount);
-            // Neither line reached ObserveRawLine: a Text rule that would have
-            // matched either one never fired, and neither line is in the raw-line
-            // ring — proving the skip happened right after Apply, not merely that
-            // the write-back was suppressed afterward.
-            Assert.Empty(textMatches);
-            Assert.DoesNotContain(stats.RecentLines(), l => l.Message.Contains("orc sentry"));
-            Assert.DoesNotContain(stats.RecentLines(), l => l.Message.Contains("orc centurion"));
+            // The re-entrant Reset() must win: the damage that rolled the session
+            // (orc sentry) was wiped by the SAME stats.Reset() its own roll handler
+            // ran, and the line buffered after it (orc centurion) never got a chance
+            // to apply at all — proven by the mez factory never having been reached
+            // for either line.
+            Assert.Equal(0, tail.Stats.Snapshot().DamageTaken);
+            Assert.Equal(0, mezCalls);
 
             // A subsequent Fill + DrainBefore(MaxValue) must replay the file exactly
             // once from the top, with no double-dispatch — resetDone is now true, so
-            // the second roll on replay no longer re-enters Reset().
+            // the second roll on replay no longer re-enters Reset(), and both
+            // admitted lines reach the mez factory normally this time.
             Assert.True(tail.Fill());
             tail.DrainBefore(DateTime.MaxValue);
-            Assert.Equal(2, stats.Snapshot().YourKillCount);   // orc sentry + orc centurion, once each
-            Assert.Contains(textMatches, l => l.Contains("orc sentry"));
-            Assert.Contains(textMatches, l => l.Contains("orc centurion"));
+            Assert.Equal(10, tail.Stats.Snapshot().DamageTaken);   // orc sentry + orc centurion, 5 each, once each
+            Assert.Equal(2, mezCalls);
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { } }
     }
@@ -498,18 +480,17 @@ public class TeammateLogTailTests
             var path = Path.Combine(dir, "eqlog_Buddy_freeport.txt");
             File.WriteAllText(path, "[Sat Jul 18 20:02:00 2026] You have sla");
 
-            var stats = new SessionStats();
-            var tail = new TeammateLogTail(path, stats, () => null);
+            var tail = new TeammateLogTail(path, () => null);
 
             Assert.True(tail.Fill());
             tail.DrainBefore(DateTime.MaxValue);
-            Assert.Equal(0, stats.Snapshot().YourKillCount);   // the partial line hasn't split yet
+            Assert.Equal(0, tail.Stats.Snapshot().YourKillCount);   // the partial line hasn't split yet
 
             File.AppendAllText(path,
                 "in orc guard!\n[Sat Jul 18 20:03:00 2026] You have slain orc sentry!\n");
             Assert.True(tail.Fill());
             tail.DrainBefore(DateTime.MaxValue);
-            Assert.Equal(2, stats.Snapshot().YourKillCount);
+            Assert.Equal(2, tail.Stats.Snapshot().YourKillCount);
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { } }
     }
@@ -525,12 +506,11 @@ public class TeammateLogTailTests
                 "[Sat Jul 18 20:02:00 2026] You have slain orc guard!\r\n" +
                 "[Sat Jul 18 20:03:00 2026] You have slain orc sentry!\n");
 
-            var stats = new SessionStats();
-            var tail = new TeammateLogTail(path, stats, () => null);
+            var tail = new TeammateLogTail(path, () => null);
 
             Assert.True(tail.Fill());
             tail.DrainBefore(DateTime.MaxValue);
-            var snap = stats.Snapshot();
+            var snap = tail.Stats.Snapshot();
             Assert.Equal(2, snap.YourKillCount);
             Assert.Equal(new DateTime(2026, 7, 18, 20, 3, 0), snap.LastEventTime);
         }
@@ -547,18 +527,143 @@ public class TeammateLogTailTests
                 "[Sat Jul 18 20:02:00 2026] You have slain orc guard!",
                 "[Sat Jul 18 20:04:00 2026] You have slain orc sentry!");
 
-            var stats = new SessionStats();
-            var tail = new TeammateLogTail(path, stats, () => null);
+            var tail = new TeammateLogTail(path, () => null);
             tail.Fill();
             tail.DrainBefore(DateTime.MaxValue);
-            Assert.Equal(2, stats.Snapshot().YourKillCount);
+            Assert.Equal(2, tail.Stats.Snapshot().YourKillCount);
 
             // Shorter than what's already been read — the same shape as a janitor
             // truncation of the primary log.
             File.WriteAllLines(path, ["[Sat Jul 18 20:06:00 2026] You have slain orc centurion!"]);
             Assert.True(tail.Fill());
             tail.DrainBefore(DateTime.MaxValue);
-            Assert.Equal(3, stats.Snapshot().YourKillCount);
+            Assert.Equal(3, tail.Stats.Snapshot().YourKillCount);
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { } }
+    }
+
+    [Fact]
+    public void TeammateLinesNeverReachObserveRawLine()
+    {
+        // Finding 5: DrainBefore fed EVERY teammate line to ObserveRawLine
+        // unconditionally, with no TeammateFeed gate at all. Lines both logs carry
+        // verbatim (group/guild chat, third-party combat, "X has been slain by Y")
+        // were observed twice per occurrence once merged with the primary — one
+        // raid-call alert fired twice, and the recent-lines ring filled with
+        // duplicates. The user's own log already carries every world/chat line,
+        // which is exactly what TeammateFeed's class doc claims this feature skips.
+        var dir = Directory.CreateTempSubdirectory("eqbuddy-tail-").FullName;
+        try
+        {
+            var path = WriteLog(dir, "eqlog_Buddy_freeport.txt",
+                "[Sat Jul 18 20:02:00 2026] Someone tells the guild, 'Incoming!'");
+
+            var textMatches = new List<string>();
+            var tail = new TeammateLogTail(path, () => null);
+            // Deliberately wired anyway (this class's own doc says NOTHING may ever
+            // subscribe to the teammate instance's events in production) — the point
+            // of this test is that DrainBefore itself never gives ObserveRawLine the
+            // chance to fire it, regardless of whether something is listening.
+            tail.Stats.TextMatched += raw => textMatches.Add(raw.Line);
+            tail.Stats.RefreshTextPatterns(
+                [new TrackedRule { Name = "incoming", Pattern = "Incoming!", Kind = WatchKind.Text }]);
+
+            Assert.True(tail.Fill());
+            tail.DrainBefore(DateTime.MaxValue);
+
+            Assert.Empty(textMatches);
+            Assert.DoesNotContain(tail.Stats.RecentLines(), l => l.Message.Contains("Incoming!"));
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { } }
+    }
+
+    /// <summary>
+    /// A2 (part i): a mid-session pick used to import the teammate's ENTIRE latest
+    /// contiguous session regardless of how long the primary's own session had been
+    /// running, so five minutes of your session got combined with two hours of their
+    /// kills and divided by five minutes. <see cref="TeammateLogTail.PrimarySessionStart"/>
+    /// lets the caller (LogWatcher, wired from the primary SessionStats) supply the
+    /// bound; anything the teammate's log carries strictly before it must not reach
+    /// their isolated Stats at all.
+    /// </summary>
+    [Fact]
+    public void EventsBeforeThePrimarysSessionStartAreRejected()
+    {
+        var dir = Directory.CreateTempSubdirectory("eqbuddy-tail-").FullName;
+        try
+        {
+            var path = WriteLog(dir, "eqlog_Buddy_freeport.txt",
+                "[Sat Jul 18 18:00:00 2026] You have slain orc guard!",   // two hours before the primary's session started
+                "[Sat Jul 18 20:00:00 2026] You have slain orc sentry!"); // after — must still count
+
+            var tail = new TeammateLogTail(path, () => null)
+            {
+                PrimarySessionStart = () => new DateTime(2026, 7, 18, 19, 55, 0),
+            };
+
+            Assert.True(tail.Fill());
+            tail.DrainBefore(DateTime.MaxValue);
+
+            Assert.Equal(1, tail.Stats.Snapshot().YourKillCount);
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { } }
+    }
+
+    /// <summary>
+    /// Repair round C2: the ORIGINAL bootstrap tolerance ("null means admit
+    /// everything") was itself the bug — a per-line reject can only fire once a
+    /// bound EXISTS to compare against, so every line offered while
+    /// <see cref="TeammateLogTail.PrimarySessionStart"/> still reports null sailed
+    /// through unfiltered, including a teammate kill hours before the primary's log
+    /// even existed. Once the primary logs its first event and DrainBefore runs
+    /// again with the SAME buffered line still sitting there, the (now-established)
+    /// bound must still be free to reject it — which it cannot do if the line was
+    /// already dispatched during the null window. The fix HOLDS draining — not just
+    /// individual lines — for as long as the bound is unknown.</summary>
+    [Fact]
+    public void WithNoPrimarySessionStartYetNothingIsAdmittedAtAll()
+    {
+        var dir = Directory.CreateTempSubdirectory("eqbuddy-tail-").FullName;
+        try
+        {
+            var path = WriteLog(dir, "eqlog_Buddy_freeport.txt",
+                "[Sat Jul 18 18:00:00 2026] You have slain orc guard!");
+
+            var tail = new TeammateLogTail(path, () => null) { PrimarySessionStart = () => null };
+
+            Assert.True(tail.Fill());
+            tail.DrainBefore(DateTime.MaxValue);
+
+            Assert.Equal(0, tail.Stats.Snapshot().YourKillCount);   // held, not dropped and not admitted
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { } }
+    }
+
+    /// <summary>The other half: once the primary's own first event establishes a
+    /// REAL bound, whatever was held catches up — filtered by that bound exactly
+    /// like a line offered after it always was. A teammate picked before the
+    /// primary's own log is a normal startup order, not a permanent gap.</summary>
+    [Fact]
+    public void OnceThePrimarySessionStartIsEstablishedHeldLinesCatchUpAndAreFiltered()
+    {
+        var dir = Directory.CreateTempSubdirectory("eqbuddy-tail-").FullName;
+        try
+        {
+            var path = WriteLog(dir, "eqlog_Buddy_freeport.txt",
+                "[Sat Jul 18 18:00:00 2026] You have slain orc guard!",   // before the eventual bound — must stay rejected
+                "[Sat Jul 18 20:00:00 2026] You have slain orc sentry!"); // after — must land once the bound exists
+
+            DateTime? bound = null;
+            var tail = new TeammateLogTail(path, () => null) { PrimarySessionStart = () => bound };
+
+            Assert.True(tail.Fill());
+            tail.DrainBefore(DateTime.MaxValue);
+            Assert.Equal(0, tail.Stats.Snapshot().YourKillCount);   // still held — no bound yet
+
+            bound = new DateTime(2026, 7, 18, 19, 55, 0);           // the primary just logged its first event
+            tail.DrainBefore(DateTime.MaxValue);
+
+            Assert.Equal(1, tail.Stats.Snapshot().YourKillCount);   // only the 20:00 kill — 18:00 stays rejected
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { } }
     }

@@ -19,10 +19,21 @@ public static class MoneyPresentation
     /// than empty.</summary>
     public static List<string> SummaryLines(StatsSnapshot s)
     {
+        // Repair round C4: CorpseCopper is duo-wide (DuoStats.Combine sums it), but
+        // CoinDrops/BiggestDrop stay primary-only (A4's decision — correlating
+        // receipts per corpse needs data this redesign doesn't track). In duo mode
+        // a corpse the teammate looted alone would read "Corpses 10p (0 drops,
+        // biggest 0c)" — a true total flatly contradicted by qualifiers that are
+        // genuinely, correctly zero for the PRIMARY alone. `Mate` non-null is the
+        // duo marker; hidden rather than labelled "yours", since a personal count
+        // beside a duo total invites the same misreading in different words.
+        var corpseLine = s.Mate is null
+            ? $"Corpses {StatsSnapshot.FormatCoin(s.CorpseCopper)} " +
+              $"({s.CoinDrops} drops, biggest {StatsSnapshot.FormatCoin(s.BiggestDrop)})"
+            : $"Corpses {StatsSnapshot.FormatCoin(s.CorpseCopper)}";
         var lines = new List<string>(4)
         {
-            $"Corpses {StatsSnapshot.FormatCoin(s.CorpseCopper)} " +
-            $"({s.CoinDrops} drops, biggest {StatsSnapshot.FormatCoin(s.BiggestDrop)})",
+            corpseLine,
 
             $"Merchant sales {StatsSnapshot.FormatCoin(s.VendorCopper)} ({s.SalesCount} sales)",
 

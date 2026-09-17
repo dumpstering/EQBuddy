@@ -3,6 +3,15 @@ using System.Text.Json;
 namespace EQBuddy.Core;
 
 /// <summary>
+/// Marker for a durable, on-disk store a <see cref="SessionStats"/> property can
+/// hold (repair round A9b) — TeammateIsolationTests scans for THIS instead of a
+/// hand-curated list of store types, so a future store is caught the moment its
+/// class carries the marker, with no line spent on SessionStats.cs itself (the
+/// marker lives on the store's own class declaration, not on the property).
+/// </summary>
+public interface IDurableSessionStore;
+
+/// <summary>
 /// Durable per-character AA ledger (aa-ledger.json in appdata). The in-session ledger
 /// rebuilds from full-log replay, but log truncation erases purchase lines for good —
 /// this store is what remembers "Combat Fury 3, bought July 30th" after the janitor has
@@ -10,7 +19,7 @@ namespace EQBuddy.Core;
 /// the install); rank-max on both write and read, so replaying an old log can never
 /// regress what a newer session recorded.
 /// </summary>
-public sealed class AaLedgerStore
+public sealed class AaLedgerStore : IDurableSessionStore
 {
     public sealed record Entry(int Rank, DateTime Time);
 

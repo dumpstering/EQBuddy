@@ -1,44 +1,37 @@
 namespace EQBuddy.Core;
 
-/// <summary>Which of a TEAMMATE's log events are admitted into the shared pipeline.
-/// Your own log already carries everything bystander-visible when you play together
-/// (third-party swings, "X has been slain by Teammate", mez/charm landings, zone lines),
-/// so admitting those again would double-count. Character state (level, AA, skills,
-/// stance, pet, buffs on YOU, /loc) belongs to the watched character only and would be
-/// overwritten. What is left is what only their log knows: their first-person combat,
-/// loot, money, XP, casts and deaths.
+/// <summary>Which of a TEAMMATE's log events reach the ONE consumer left that still
+/// filters them: the shared <see cref="MezTracker"/>.
 ///
-/// <b>Only SessionStats and the mez tracker ever see a teammate event.</b>
-/// <see cref="BuffTracker"/> and <see cref="BuffLossLog"/> model the WATCHED
-/// character's own body (buff durations learned from YOUR cast→worn-off pairs; buffs
-/// lost on YOUR death or damage), <see cref="SlowTracker"/> reads a debuff wearing off
-/// of YOU — a teammate's identically-worded first-person line would end your own
-/// countdown or teach a wrong duration for a spell you never cast. Spawn timers, the
-/// raid ledger and the spawn-point archive are persisted, group-visible ledgers your
-/// own log already feeds (a kill, a raid boss falling, a spawn point are visible to
-/// everyone nearby), so a teammate's copy of the same fact would only ever duplicate
-/// what your own log already wrote in. Only the mez tracker gains real information
-/// from a teammate's log that yours lacks: their mez casts, "Your Mesmerize spell has
-/// worn off of X", their resists, and a mob hitting them (proof it's awake).</summary>
+/// Step 3 of the teammate-isolation redesign retired the whole reason this class used to
+/// need two different admission lists. A teammate's log now drives its OWN, fully
+/// isolated <see cref="SessionStats"/> instance (built and owned by
+/// <see cref="TeammateLogTail"/>) — every parsed event reaches it unconditionally, with
+/// no gate and no <c>fromTeammate</c> flag, because that instance never acquires a
+/// durable store, a subscriber, or the watched character's identity (see
+/// <see cref="TeammateLogTail"/>'s class doc for the invariant that makes this safe by
+/// construction). What used to be <c>AdmitForStats</c> — a hand-maintained list of which
+/// event kinds were "safe" to let touch the shared instance — is gone along with the
+/// shared instance it protected.
+///
+/// The mez tracker is different: it is ONE tracker shared by both logs (a landing is
+/// bystander-visible; only the CASTER's own log ever prints "Your X spell has worn off of
+/// Y"), so it still needs telling which of a teammate's events are real evidence for it —
+/// see <see cref="AdmitForMez"/>.</summary>
 public static class TeammateFeed
 {
-    /// <summary>True when the event may be applied to SessionStats.</summary>
-    public static bool AdmitForStats(GameEvent e) => e switch
+    /// <summary>True when the event may go to the mez tracker — the one consumer that
+    /// still needs telling apart from "everything a teammate's log parses". Tightened
+    /// (Step 2, plan Part 4b) to EXACTLY what <see cref="MezTracker.Apply(GameEvent, string)"/>'s
+    /// switch consumes: everything else used to be admitted here too but hit no case in
+    /// that switch and only ever advanced its own Prune. Kills are excluded: your own
+    /// log already recorded this one as "slain by &lt;teammate&gt;". Deaths are excluded
+    /// too: a death is a body-state fact about the teammate, not evidence about a
+    /// mez/charm target.</summary>
+    public static bool AdmitForMez(GameEvent e) => e switch
     {
-        KillEvent k => k.Killer == "You",
-        DamageDealtEvent or DamageTakenEvent or MissEvent or HealEvent or RuneBlockEvent
-            or RegenTickEvent or DeathEvent or LootEvent or MoneyEvent or AutoSellEvent
-            or ItemDestroyedEvent or XpEvent or FactionEvent or CraftEvent or FashionEvent
-            or ItemProcEvent or FizzleEvent or SpellCastEvent or SpellInterruptedEvent
-            or SpellBlockedEvent or SpellWornOffEvent or ResistEvent or ConsiderEvent
-            or RaidChatterEvent => true,
+        SpellCastEvent or SpellWornOffEvent or SpellInterruptedEvent or SpellBlockedEvent
+            or FizzleEvent or ResistEvent or DamageDealtEvent or DamageTakenEvent => true,
         _ => false,
     };
-
-    /// <summary>True when the event may ALSO go to the mez tracker — the ONE other
-    /// consumer that gains real information from a teammate's log (see the class
-    /// doc). Kills are excluded: your own log already recorded this one as "slain by
-    /// &lt;teammate&gt;". Deaths are excluded too: a death is a body-state fact about
-    /// the teammate, not evidence about a mez/charm target.</summary>
-    public static bool AdmitForMez(GameEvent e) => e is not KillEvent and not DeathEvent && AdmitForStats(e);
 }

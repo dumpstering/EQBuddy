@@ -436,6 +436,8 @@ internal static class WidgetDump
                     // doing nothing, because this profile has no paired device.
                     $"companionPumpTicks={w._companionPumpTicks} " +
                     $"companionPushes={w._companionPushes} " +
+                    $"teammateWarning={(w.TeammateWarning.Visibility == Visibility.Visible ? 1 : 0)} " +
+                    $"teammateWarningExplainsClock={(w.TeammateWarning.Text.Contains("clocks differ") ? 1 : 0)} " +
                     // Alt+Tab (Hateborne, 2026-08-25). Reported as the EFFECT — the ex-style
                     // actually on the HWND — not as the setting, because "present in the
                     // build" and "in effect at runtime" are different claims and trap 42

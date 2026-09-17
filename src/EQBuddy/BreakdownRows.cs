@@ -34,6 +34,7 @@ internal static class BreakdownRows
         string? nameNote = null)
     {
         frac = Math.Clamp(frac, 0.01, 1.0);
+        name = DuoStats.DisplayActorTag(name);
         var row = new Grid { Margin = new Thickness(0, 2, 0, 3), HorizontalAlignment = HorizontalAlignment.Stretch };
         row.RowDefinitions.Add(new RowDefinition());
         row.RowDefinitions.Add(new RowDefinition());
@@ -191,7 +192,7 @@ internal static class BreakdownRows
                     Foreground = (Brush)resources.FindResource("DimBrush"),
                 });
             }
-            else left.Text = name;
+            else left.Text = DuoStats.DisplayActorTag(name);
             if (tooltip?.Invoke(name) is { Length: > 0 } tip)
             {
                 var tipText = new TextBlock { Text = tip, TextWrapping = TextWrapping.Wrap, MaxWidth = 340 };

@@ -12,7 +12,7 @@ namespace EQBuddy.Core;
 /// high-water mark makes the startup full-log replay idempotent. Keys are base spell
 /// names (ranks collapse onto one measured pair).
 /// </summary>
-public sealed class StackingLedgerStore
+public sealed class StackingLedgerStore : IDurableSessionStore
 {
     public sealed class Entry
     {

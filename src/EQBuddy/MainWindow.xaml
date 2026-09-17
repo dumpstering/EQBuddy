@@ -192,6 +192,8 @@
             </Grid>
 
             <!-- Logging-off reminder -->
+            <TextBlock x:Name="TeammateWarning" TextWrapping="Wrap" Foreground="{DynamicResource WarnBrush}"
+                       FontSize="{DynamicResource FontBody}" Margin="{DynamicResource LeadM}" Visibility="Collapsed"/>
             <Border x:Name="LogBanner" Background="{DynamicResource WarnWashBrush}" CornerRadius="{DynamicResource CornerCard}" Padding="{DynamicResource PadRow}"
                     Margin="{DynamicResource LeadM}" Visibility="Collapsed">
                 <TextBlock TextWrapping="Wrap" FontSize="{DynamicResource FontBody}">

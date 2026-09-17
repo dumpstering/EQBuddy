@@ -46,12 +46,14 @@ build tripled since they were written — and then drifted 10-15% again in FOUR 
 why `DocumentationSizeTests` checks this table against the repo: a measurement nobody
 re-measures rots without anyone touching it.
 
+Re-measured 2026-09-07 (teammate-log redesign, Steps 1-5/6b).
+
 | Project | Files | Lines | Role |
 |---|---:|---:|---|
-| `EQBuddy.Core` | 98 | 22,626 | Parsing, aggregation, settings, catalogs, wiki. No UI. |
-| `EQBuddy.UI.Shared` | 102 | 11,526 | View-model/formatting shared by the widget and the mobile projection. **Framework-free — enforced by `ArchitectureTests`.** |
+| `EQBuddy.Core` | 104 | 24,253 | Parsing, aggregation, settings, catalogs, wiki. No UI. |
+| `EQBuddy.UI.Shared` | 104 | 12,690 | View-model/formatting shared by the widget and the mobile projection. **Framework-free — enforced by `ArchitectureTests`.** |
 | `EQBuddy.Companion` | 16 | 4,357 | LAN HTTP+WebSocket server and the mobile page. **UI-toolkit-free on purpose** — which is what let the Avalonia build host it unchanged while that lane existed, and what keeps it honest now that only one does. |
-| `EQBuddy` | 91 | 27,863 | The WPF widget and its windows. Now the largest project in the repo. |
+| `EQBuddy` | 93 | 29,802 | The WPF widget and its windows. Now the largest project in the repo. |
 
 ## 2. Load-bearing invariants
 
@@ -137,7 +139,7 @@ the lift came first, and the baseline came down in the same commit.**
 | File | Baseline | Now | Fails at | Headroom |
 |---|---:|---:|---:|---:|
 | `EQBuddy/MainWindow*.xaml.cs` | 3,895 | 4,284 | 4,284 | 0 |
-| `EQBuddy.Core/SessionStats*.cs` | 2,375 | 2,444 | 2,612 | 168 |
+| `EQBuddy.Core/SessionStats*.cs` | 2,375 | 2,536 | 2,612 | 76 |
 | `EQBuddy/OptionsWindow.xaml.cs` | 326 | 326 | 358 | 32 |
 | `EQBuddy.Core/LogParser.cs` | 853 | 933 | 938 | 5 |
 
@@ -400,7 +402,9 @@ stamp. A device parked in one zone receives the picture exactly once.
 
 **Mobile cadence — two paths, on purpose.** The *latency* path is `PumpCompanion`, a
 50 ms `DispatcherTimer` gated by `UI.Shared/CompanionPumpGate`: it pushes as soon as
-`SessionStats.CurrentVersion` moves. The *correctness* path is the `CompanionHost.Tick`
+`SessionStats.DuoVersion` moves (not `CurrentVersion` alone — see "Duo / teammate
+isolation" below for why that distinction is load-bearing). The *correctness* path is
+the `CompanionHost.Tick`
 inside `RefreshUi`, still once a second, which is what keeps `ForcedPushInterval`
 reconciliation running through a camp quiet enough that the version never moves.
 
@@ -414,6 +418,82 @@ timer is wired to it, and pushes nothing when unpaired, is asserted from `EQBudd
 Countdowns are unaffected by any of this — devices compute them locally from
 authoritative timestamps, and they are excluded from the section fingerprints. A ticking
 clock is not news, and including one would wake every device on every pump.
+
+**Duo / teammate isolation (2026-09-07).** A teammate's log (`AppSettings.TeammateLogPath`,
+picked in Options → Behavior) is tailed by `TeammateLogTail` alongside `LogWatcher`'s own
+primary tail. Three rounds of gating individual `SessionStats.Apply` call sites behind a
+`fromTeammate` flag each closed a named leak, and each following audit found the same
+class of bug in a new place the flag had not reached yet. The fix is structural rather
+than remembered: **`TeammateLogTail.Stats` is a second, fully independent
+`SessionStats` instance** — a plain `new SessionStats()`, never handed a durable store
+(`AaStore`/`QuestStore`/`StackingStore`/`InventoryDumpResolver`), never subscribed to
+(`TextMatched`/`OutputfileWritten`/`SessionRolledOver`), never wired to
+`Spells.AttachStore` or `RefreshTextPatterns`. Every one of those is an OPT-IN property
+only `MainWindow` ever sets, and only on the PRIMARY instance — so there is no code path
+left that could leak the teammate's data into the watched character's ledgers, learning,
+or history, because nothing hands it the keys. `TeammateIsolationTests` proves the
+invariant by reflection rather than trusting it.
+
+The one allowed subscription is `SessionEnding → OnCompanionSessionEnding`: it carries
+teammate totals across inactivity resets for desktop display, without persisting them.
+
+Because the two are separate objects, every parsed teammate event reaches
+`TeammateLogTail.Stats.Apply(evt)` UNCONDITIONALLY — no gate, no flag — and
+`TeammateFeed.AdmitForStats` (the old admission list this replaced) is gone entirely.
+The ONE thing still shared is the mez tracker (a landing is bystander-visible; only the
+CASTER's own log ever prints "Your X spell has worn off of Y"), so `MezTracker.Apply`
+is now source-aware (`Apply(evt, source)`, `source` = the teammate's own character name)
+and `TeammateFeed.AdmitForMez` still filters what of a teammate's log is real evidence
+for it.
+
+**Combining the two for display is `DuoStats.Combine(mine, mate)`** (pure, static, no
+lock) — called from `SessionStats.DuoSnapshot`, the ONE place two sessions become one
+number. `MainWindow.BuildSnapshot()` calls `DuoSnapshot`, never `Combine` directly; the
+primary-only `Snapshot()` feeds the archiver and 5-minute checkpoint. The wiki pack
+uses the snapshot's primary-only `Mobs` plus stored primary observations. Both Mobile
+push paths use the argument-less `BuildSnapshot()`, which defaults to `DuoSnapshot` —
+so Mobile now carries duo totals too (2026-09-17, reversing the earlier primary-only
+call), retaining the configured recent window and tracked rules. A teammate's session
+is never persisted: the archiver, the 5-minute checkpoint and the wiki pack all still
+call the plain `Snapshot()` directly, never `BuildSnapshot()`. The
+field-by-field rule (curated in `DuoStatsTests`, whose
+`EveryStatsSnapshotPropertyIsClassifiedAsCombinedOrPassedThrough` fails the build the
+moment a new `StatsSnapshot` property ships unclassified):
+
+| Rule | Fields (representative, not exhaustive) |
+|---|---|
+| **Sum** — their activity reaches your log only as a third-party line that never touches your own totals | `YourKillCount`/`YourKills`, `DamageDealt` and its splits, `HealingDone`/`HealingReceived`, `LootTotal`/`Loot`, `Copper` and its splits |
+| **Max** | `MaxHit` |
+| **Union** (repair round B3/C7) | `CombatSeconds` — the real union of both sides' timestamped combat spans (`DuoCompanion.UnionCombatSeconds`), not a max: two SEQUENTIAL fights add, two OVERLAPPING ones don't double-count, and only agree with a max when one span fully contains the other. Captured atomically with each side's own snapshot, under that instance's own lock, so a hit landing mid-capture can't pair a newer span with older damage |
+| **Recompute** — never sum two RATES | `KillsPerHour`, `SessionDps`, `Hps`, `CopperPerHour` — each rebuilt from the summed totals over the combined window |
+| **Stays mine — a percentage of a different level bar** | `XpPercent`, `XpPerHour`, `HoursToLevel`, `AaGained`/`AaTotal`, `Faction` — the single most important "no" in the table: summing two characters' XP% is meaningless |
+| **Stays mine — correctness, would double-count** | `CoinDrops`, `BiggestDrop` (repair round A4: an event count and a largest single RECEIPT respectively — correlating them per corpse across a split needs data this redesign doesn't track, so both stay primary-only rather than a plausible-looking wrong number; the UI hides or relabels them in duo mode when the primary took no drops at all — repair round C4, `UI.Shared/MoneyPresentation.cs`) |
+| **Stays mine, by a RESIDUAL subtraction** | `PartyKillCount` and its breakdowns: your own log already counts a teammate's kill as a party kill, so the classification is "mine" — but the SUBTRACTION is a residual, not a flat pass-through (repair round C3). It subtracts only the teammate's TRUE promoted kills as observed in the PRIMARY's own log (`DuoCompanion`'s promoted-kill dispatch, keyed by killer AND target), never the teammate's self-reported count — self-reporting alone can't tell your own row's kill apart from a third groupmate's kill of the same target name, and subtracting the wrong one would delete a real kill that was never the teammate's |
+| **Stays mine — explicit non-goal / v1 gap, documented** | `Mobs` (a correct merge needs a mob-identity join — deferred), `Encounters`/`LastFight` (a fight-identity join across two logs is a real feature, not built here), `Deaths`, `CurrentTargets` |
+| **The escape hatch** | `StatsSnapshot.Mate` — `[JsonIgnore]`d, holds the OTHER side's own snapshot verbatim, for every side-by-side number (their XP%, their level, their deaths) that has no dedicated combined field |
+
+**The version-plumbing trap.** The desktop combined version sums the two live versions;
+carry does not add a historical version again. Mobile's fast pump and reconciliation
+tick both use `SessionStats.DuoVersion` too now — the same number the desktop uses —
+because feeding the pump's gate the primary version while the snapshot it pushes
+carries the combined one means the two never agree, and the pump leaks a push on every
+reconciliation tick for as long as a teammate is assigned, forever, with no teammate
+activity required to keep it going. `MobileDuoPumpVersionTests` reproduces the leak
+directly against the mismatch before asserting it is gone. Snapshot readers and watcher
+mutations share `DuoSync` (watcher lock → DuoSync → individual stats locks), covering
+the full apply/rollover/carry transaction, not just each snapshot separately.
+`LogWatcher` sets/clears `_stats.Companion` alongside its own teammate lifecycle
+(`SelectTeammate`/`Select`'s self-reference refusal) and hooks `_stats.SessionRolledOver`
+once, lazily, to reset companion stats and carry when the watched character's OWN
+session rolls, including historical rolls during initial replay. Explicit primary
+selection also clears carry. The pre-reset capture in `SessionStats.cs` records spans
+in a weak table keyed by the ending snapshot; the carry callback retains those spans
+for the union without adding a snapshot property or attaching a store.
+
+The sole primary-poll hook drains teammate lines and remembers the current primary
+kill. The next hook (or trailing drain) accounts for that kill after upstream has
+applied it. Clock matching consumes each occurrence once from bounded per-side queues.
+It supports either arrival order; target names are still not unique creature IDs.
 
 ## 5. Known limits, stated honestly
 
