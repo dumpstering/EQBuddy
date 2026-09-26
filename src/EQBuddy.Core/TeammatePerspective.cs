@@ -177,30 +177,49 @@ public static class TeammatePerspective
             return [new TeammateLine(actor, $"You have slain {m.Groups["target"].Value}!", isPet)];
         }
 
+        // A pet's own "cast" (school-DoT and heal spells still parse fine because
+        // they land on SubjectSchoolDamage/SubjectDotDealt/the heal shapes above —
+        // this is only the *cast-begins* announcement) is not attributable to the
+        // owner: upstream never counts the primary's own pet's casts either, so a
+        // pet actor here is dropped rather than inflating the owner's _castsStarted.
         if ((m = shapes.SubjectCast.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
+            if (isPet) return [];
             var line = $"You begin {m.Groups["how"].Value} {m.Groups["spell"].Value}.";
             return [new TeammateLine(actor, line, isPet)];
         }
 
+        // A pet's own death is not observed anywhere in the corpus and is dropped
+        // rather than guessed at — see the object-form note below for why a pet
+        // actor is refused here rather than folded into the owner.
         if ((m = shapes.SubjectDeathBy.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
+            if (isPet) return [];
             return [new TeammateLine(actor, $"You have been slain by {m.Groups["killer"].Value}!", isPet)];
         }
 
         if ((m = shapes.SubjectDeathPlain.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
+            if (isPet) return [];
             return [new TeammateLine(actor, "You died.", isPet)];
         }
 
         // ---- object forms: the teammate is the one being acted on ----
+        //
+        // A pet actor is refused on every object-form shape below: upstream only
+        // ever calls TrackCombat for the PRIMARY's own pet being hit (SessionStats.cs
+        // §"the primary's own pet"), never folds the damage/avoidance itself into the
+        // primary's own DamageTaken/MeleeHitsTaken/HealingReceived. Folding it here
+        // would inflate a teammate's own defensive numbers with their warder's, which
+        // nothing upstream does for the primary's pet either (design survey finding).
 
         if ((m = shapes.ObjectMelee.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
+            if (isPet) return [];
             var line = $"{m.Groups["attacker"].Value} {m.Groups["verb"].Value} YOU for {m.Groups["rest"].Value}";
             return [new TeammateLine(actor, line, isPet)];
         }
@@ -213,6 +232,7 @@ public static class TeammatePerspective
         if ((m = shapes.ObjectMeleeMissRune.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
+            if (isPet) return [];
             var line = $"{m.Groups["attacker"].Value} tries to {m.Groups["verb"].Value}{m.Groups["on"].Value} " +
                        $"YOU, but YOUR magical skin absorbs the blow!{m.Groups["note"].Value}";
             return [new TeammateLine(actor, line, isPet)];
@@ -221,6 +241,7 @@ public static class TeammatePerspective
         if ((m = shapes.ObjectMeleeMissGeneric.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
+            if (isPet) return [];
             var line = $"{m.Groups["attacker"].Value} tries to {m.Groups["verb"].Value}{m.Groups["on"].Value} " +
                        $"YOU, but {m.Groups["reason"].Value}!{m.Groups["note"].Value}";
             return [new TeammateLine(actor, line, isPet)];
@@ -229,6 +250,7 @@ public static class TeammatePerspective
         if ((m = shapes.ObjectSchoolDamage.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
+            if (isPet) return [];
             var line = $"{m.Groups["attacker"].Value} hit YOU for {m.Groups["rest"].Value}";
             return [new TeammateLine(actor, line, isPet)];
         }
@@ -236,14 +258,26 @@ public static class TeammatePerspective
         if ((m = shapes.ObjectDamageShieldTaken.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
+            if (isPet) return [];
             return [new TeammateLine(actor, $"YOU are {m.Groups["phrase"].Value}!", isPet)];
         }
 
         if ((m = shapes.ObjectDotTaken.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
+            if (isPet) return [];
             return [new TeammateLine(actor, $"You have taken {m.Groups["rest"].Value}", isPet)];
         }
+
+        // "<actor> has taken N damage by <spell>." (no "from ... by <caster>" clause —
+        // e.g. "Garg has taken 11 damage by Cancelling of Life.") is DELIBERATELY not
+        // rewritten. LogParser's only "taken damage" shape for the primary
+        // (DotInRx: "You have taken N damage from <spell> by <attacker>.") requires a
+        // caster this line never names, and every other field this file fills in is
+        // something the raw line actually states — inventing a caster name to force a
+        // match would put a fabricated row in DamageByAttacker, which the "only what
+        // the log actually shows" rule (class doc) refuses. Documented as
+        // unobservable rather than guessed at; see the finding this traces to.
 
         return [];
     }
@@ -266,22 +300,41 @@ public static class TeammatePerspective
         // target may be themselves ("himself"/"herself"/"itself"), the primary
         // ("you"), a fellow teammate, or a bystander — all become a plain "You
         // healed <target>" line, HealOutRx's own shape.
+        //
+        // A PET healing ITSELF ("Kanaddar`s warder healed itself for 20 hit points")
+        // is folded to the owner's HealingDone (tagged "(pet)" by the caller) but must
+        // NOT read as the owner receiving anything: substituting the owner's own name
+        // as the target — the same substitution a non-pet reflexive heal gets, two
+        // lines below — would match SessionStats' "You healed <own name>" self-heal
+        // rule and add a "Yourself" row + HealingReceived the owner never got (the
+        // warder's hit points are not the owner's). "(pet)" is not a roster name and
+        // not the owner's CharacterName, so it reads as an ordinary heal of a
+        // bystander: HealingDone counts, nothing is received.
         var (healerActor, healerIsPet) = ResolveIfRoster(healerRaw, names);
         if (healerActor != null)
         {
-            var realTarget = targetRaw is "himself" or "herself" or "itself" ? healerActor
+            var realTarget = healerIsPet && targetRaw is "himself" or "herself" or "itself" ? "(pet)"
+                : targetRaw is "himself" or "herself" or "itself" ? healerActor
                 : targetRaw == "you" ? primaryName
                 : targetRaw;
             results.Add(new TeammateLine(healerActor, $"You healed {realTarget}{tail}", healerIsPet));
         }
 
         // The target is a teammate: an incoming heal for their own stats, whoever
-        // cast it (the primary player, another teammate, or a bystander).
+        // cast it (the primary player, another teammate, or a bystander) — EXCEPT:
+        //   - when the target is a PET, per the object-form rule (a pet being healed
+        //     is not attributable to the owner, same reasoning as damage taken); and
+        //   - when the target resolves to the SAME actor as the healer above (a pet
+        //     healing its own owner, "Kellisanth`s warder healed Kellisanth for 147
+        //     hit points") — the healerActor line just above ALREADY counts this
+        //     exact amount as both HealingDone and (self-heal) HealingReceived on
+        //     Kellisanth's own stats; emitting this second line too doubled
+        //     HealingReceived for every such line in the log (the "+147" bug).
         var (targetActor, targetIsPet) = ResolveIfRoster(targetRaw, names);
-        if (targetActor != null)
+        if (targetActor != null && !targetIsPet && targetActor != healerActor)
         {
             var realHealer = healerRaw == "You" ? primaryName : healerRaw;
-            results.Add(new TeammateLine(targetActor, $"{realHealer} healed you{tail}", targetIsPet));
+            results.Add(new TeammateLine(targetActor, $"{realHealer} healed you{tail}", false));
         }
 
         return results;

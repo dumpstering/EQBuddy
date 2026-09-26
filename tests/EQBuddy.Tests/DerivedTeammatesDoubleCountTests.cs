@@ -158,7 +158,12 @@ public class DerivedTeammatesDoubleCountTests
     {
         var derived = new DerivedTeammates();
         var t = new DateTime(2026, 1, 1, 12, 0, 0);
-        const string line = "A basalt gargoyle hits you for 40 points of damage.";
+        // Capitalised, matching how the log actually prints a roster name ("Garg") —
+        // a lowercase "gargoyle" against roster entry "Garg" would never match the
+        // word-boundary check for an unrelated reason (case), so it proved nothing
+        // about the boundary itself. See TeammatePerspectiveFixesTests for the
+        // dedicated case-insensitivity coverage.
+        const string line = "A basalt Gargoyle hits you for 40 points of damage.";
 
         derived.Observe(t, line, Primary, null, Roster);
 

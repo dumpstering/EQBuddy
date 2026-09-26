@@ -42,14 +42,43 @@ public sealed class DerivedTeammates
     /// resummoned mid-session under a new name) rather than captured once. Cheap when
     /// the roster is empty — the auto-detector still runs (it is what LETS the roster
     /// stop being empty), but <see cref="TeammatePerspective.Rewrite"/> is never called
-    /// against zero candidate names.</summary>
+    /// against zero candidate names.
+    ///
+    /// <b>Every already-known teammate's own session clock is kept moving in lockstep
+    /// with the primary's</b>, whether or not this particular line names them: upstream's
+    /// <see cref="SessionStats.Apply"/> rolls an instance over on ITS OWN 60-minute gap
+    /// since its last applied event, and a derived teammate's instance only ever
+    /// receives an event on a line naming them — so a teammate silent for over an hour
+    /// (while the PRIMARY keeps playing, never gapping) used to roll independently and
+    /// lose everything accrued so far, and one silent for over an hour BETWEEN two
+    /// primary sessions used to carry stale totals into the fresh one (nothing ever
+    /// told their instance the primary had moved on). A harmless <see cref="RawLineEvent"/>
+    /// tick — the same event type upstream's own <c>ObserveRawLine</c> applies for an
+    /// unmatched text-watch line, ignored by every stat except the session clock itself
+    /// (SessionStats.cs: <c>e is not RawLineEvent and not RaidChatterEvent</c> excludes
+    /// it from active-play time, and its <c>switch</c> has no case for it) — is applied
+    /// to every OTHER known teammate for the same timestamp this line carries. A
+    /// teammate who DID receive a real rewritten event from this line is skipped (no
+    /// point ticking twice for one line), and the primary's own multi-hour gaps still
+    /// roll every teammate over in step, because the tick's timestamp is the same one
+    /// that would trigger the primary's own rollover.</summary>
     public void Observe(DateTime ts, string msg, string? primaryName, string? primaryPetName,
         IReadOnlyCollection<string>? manualNames)
     {
         _roster.Observe(msg);
         var roster = _roster.Roster(primaryName, primaryPetName, manualNames);
-        if (roster.Count == 0) return;
 
+        var appliedTo = roster.Count == 0 ? null : ApplyRewrittenLines(ts, msg, primaryName, roster);
+
+        foreach (var (name, stats) in _stats)
+            if (appliedTo is null || !appliedTo.Contains(name))
+                stats.Apply(new RawLineEvent(ts, msg));
+    }
+
+    private HashSet<string> ApplyRewrittenLines(DateTime ts, string msg, string? primaryName,
+        IReadOnlyCollection<string> roster)
+    {
+        var appliedTo = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var line in TeammatePerspective.Rewrite(msg, primaryName ?? "", roster))
         {
             var evt = LogParser.Parse(ts, line.Line);
@@ -63,7 +92,9 @@ public sealed class DerivedTeammates
             // already folds the PRIMARY's own pet kills into YourKillCount.
             if (line.IsPet) evt = TagPet(evt);
             GetOrCreate(line.Actor).Apply(evt);
+            appliedTo.Add(line.Actor);
         }
+        return appliedTo;
     }
 
     private static GameEvent TagPet(GameEvent evt) => evt switch
@@ -112,6 +143,23 @@ public sealed class DerivedTeammates
     /// feature.</summary>
     public StatsSnapshot? SnapshotFor(string actor) =>
         _stats.TryGetValue(actor, out var s) ? s.Snapshot() : null;
+
+    /// <summary>Every CURRENT roster member's own LIVE <see cref="SessionStats"/>
+    /// instance — for <see cref="TeammateCombine.Combine(SessionStats, IReadOnlyDictionary{string, SessionStats})"/>,
+    /// which needs the live spans (a <see cref="StatsSnapshot"/> alone cannot supply
+    /// them) to build an exact combat-seconds union, and for tests that need to drive
+    /// a teammate's instance directly. Internal, not public: reading spans off it is
+    /// safe (see that overload's own doc), but nothing outside this assembly should be
+    /// handed a mutable teammate instance to Apply against directly.</summary>
+    internal IReadOnlyDictionary<string, SessionStats> LiveStats(string? primaryName, string? primaryPetName,
+        IReadOnlyCollection<string>? manualNames)
+    {
+        var roster = Roster(primaryName, primaryPetName, manualNames);
+        var result = new Dictionary<string, SessionStats>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in roster)
+            if (_stats.TryGetValue(name, out var s)) result[name] = s;
+        return result;
+    }
 
     /// <summary>Clears every teammate's isolated stats and the auto-detected roster —
     /// call this alongside the primary's own session reset (character switch, replay

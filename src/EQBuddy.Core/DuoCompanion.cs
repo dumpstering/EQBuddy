@@ -279,6 +279,17 @@ public sealed partial class SessionStats
         return union + mineUntracked + mateUntracked + carryCombatSeconds;
     }
 
+    /// <summary>Public wrapper for <see cref="SnapshotCombatSpans"/> — <see cref="TeammateCombine"/>'s
+    /// live-instance overload needs a derived teammate's own spans (and the primary's)
+    /// to build an exact N-way combat-seconds union across a whole roster, the same way
+    /// this class already builds one for its single file-based companion below.
+    /// Returns a fresh, disconnected copy each call, same as the private method it
+    /// wraps — the caller mutates its own list freely.</summary>
+    public (List<(DateTime Start, DateTime End)> Spans, double UntrackedSeconds) SnapshotCombatSpansForCombine()
+    {
+        lock (DuoSync) return SnapshotCombatSpans();
+    }
+
     /// <summary>Every span this instance can still account for exactly — the closed
     /// spans still in <c>_combatSpans</c>, each stretched to the same 1-second floor
     /// <c>CloseCombatLocked</c>/<c>BuildSnapshotLocked</c> apply to a single-hit span

@@ -29,12 +29,25 @@ public sealed class TeammateRoster
 {
     private static readonly Regex JoinedGroupRx = new(
         @"^(?<name>[A-Za-z]+) has joined the group\.$", RegexOptions.Compiled);
-    private static readonly Regex InvitesYouRx = new(
-        @"^(?<name>[A-Za-z]+) invites you to join a group\.$", RegexOptions.Compiled);
+    // An invite alone is NOT membership — it is only ever promoted once the primary
+    // confirms it, below. See Observe's own doc for why "invites you" was dropped
+    // from the add list (a declined/ignored invite used to promote the inviter
+    // permanently — a real bystander's kills and damage counted as the "your" and
+    // party totals for the rest of the session).
+    private static readonly Regex AgreedToJoinRx = new(
+        @"^You notify (?<name>[A-Za-z]+) that you agree to join the group\.$", RegexOptions.Compiled);
     private static readonly Regex TellsGroupRx = new(
         @"^(?<name>[A-Za-z]+) tells the group,", RegexOptions.Compiled);
     private static readonly Regex TargetedNpcRx = new(
         @"^Targeted \(NPC\): (?<name>.+)$", RegexOptions.Compiled);
+    private static readonly Regex LeftGroupRx = new(
+        @"^(?<name>[A-Za-z]+) has left the group\.$", RegexOptions.Compiled);
+    private static readonly Regex RemovedFromPartyRx = new(
+        @"^You remove (?<name>[A-Za-z]+) from the party\.$", RegexOptions.Compiled);
+    private static readonly Regex UserRemovedRx = new(
+        @"^You have been removed from the group\.$", RegexOptions.Compiled);
+    private static readonly Regex UserLeftOrDisbandedRx = new(
+        @"^(?:You have left the group\.|Your group has been disbanded\.?)$", RegexOptions.Compiled);
 
     private readonly HashSet<string> _autoDetected = new(StringComparer.OrdinalIgnoreCase);
 
@@ -55,15 +68,26 @@ public sealed class TeammateRoster
 
     /// <summary>Feed one already-split (timestamp stripped) log message. Cheap early-out:
     /// every pattern here anchors at the start of the line, so a single ordinal
-    /// starts-with/contains check per pattern is enough before the regex runs.</summary>
+    /// starts-with/contains check per pattern is enough before the regex runs.
+    ///
+    /// Membership tracks who is in the group NOW, not everyone who ever appeared to
+    /// be: a name is added on a real join (an accepted invite or the join line) and
+    /// removed on that person leaving, being removed, or the group disbanding — see
+    /// each regex's own doc for the line it answers. A name dropped here does not
+    /// lose the stats it already accrued: <see cref="DerivedTeammates.KnownTeammates"/>
+    /// keeps every name this session has ever applied an event for regardless of
+    /// whether <see cref="Roster"/> still lists them.</summary>
     public void Observe(string msg)
     {
         if (string.IsNullOrEmpty(msg)) return;
 
         Match m;
         if ((m = JoinedGroupRx.Match(msg)).Success) _autoDetected.Add(m.Groups["name"].Value);
-        else if ((m = InvitesYouRx.Match(msg)).Success) _autoDetected.Add(m.Groups["name"].Value);
+        else if ((m = AgreedToJoinRx.Match(msg)).Success) _autoDetected.Add(m.Groups["name"].Value);
         else if ((m = TellsGroupRx.Match(msg)).Success) _autoDetected.Add(m.Groups["name"].Value);
+        else if ((m = LeftGroupRx.Match(msg)).Success) _autoDetected.Remove(m.Groups["name"].Value);
+        else if ((m = RemovedFromPartyRx.Match(msg)).Success) _autoDetected.Remove(m.Groups["name"].Value);
+        else if (UserRemovedRx.IsMatch(msg) || UserLeftOrDisbandedRx.IsMatch(msg)) _autoDetected.Clear();
         else if (msg[0] == 'T' && (m = TargetedNpcRx.Match(msg)).Success) _everNpc.Add(m.Groups["name"].Value);
     }
 
@@ -80,7 +104,7 @@ public sealed class TeammateRoster
         var roster = new HashSet<string>(_autoDetected, StringComparer.OrdinalIgnoreCase);
         if (manualNames is not null)
             foreach (var n in manualNames)
-                if (!string.IsNullOrWhiteSpace(n)) roster.Add(n.Trim());
+                if (!string.IsNullOrWhiteSpace(n)) roster.Add(Canonicalize(n.Trim()));
 
         if (primaryName is { Length: > 0 }) roster.Remove(primaryName);
         if (primaryPetName is { Length: > 0 }) roster.Remove(primaryPetName);
@@ -92,4 +116,17 @@ public sealed class TeammateRoster
     /// primary character starts with no assumed group. Deliberately does NOT clear
     /// <see cref="_everNpc"/>; see its own doc.</summary>
     public void Reset() => _autoDetected.Clear();
+
+    /// <summary>A hand-typed roster entry ("garg", "GARG") is canonicalised to the
+    /// shape an EQ character name actually has (one capitalised word, e.g. "Garg")
+    /// before it enters the roster set. Without this, <see cref="TeammatePerspective"/>'s
+    /// exact-word matcher — deliberately <c>Ordinal</c>, so "Garg" can never match
+    /// "Gargoyle" — never matches the log's own "Garg" against a manually-typed
+    /// "garg", and every line naming that teammate silently produces no rewrite.
+    /// Auto-detected names never need this: they are copied verbatim from a line the
+    /// log itself already printed with the correct casing, and (the roster set being
+    /// <c>OrdinalIgnoreCase</c>) an auto-detected entry already present is never
+    /// overwritten by a differently-cased manual one for the same name.</summary>
+    private static string Canonicalize(string name) =>
+        name.Length == 0 ? name : char.ToUpperInvariant(name[0]) + name[1..].ToLowerInvariant();
 }
