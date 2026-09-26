@@ -215,6 +215,19 @@ internal sealed class SettingsBehaviorView
         + "yours to keep or clean up; EQBuddy never deletes them. Untick if you would rather "
         + "have the disk space back.";
 
+    /// <summary>What a teammate log adds and what it does not. Hangs on the "Teammate log"
+    /// HEADING, the same shape <see cref="HotkeysBlurb"/> uses — the row underneath is
+    /// rebuilt whenever the path changes, so the heading is the one anchor that survives
+    /// that.</summary>
+    private const string TeammateLogBlurb =
+        "Also read a teammate's log (a synced copy of their eqlog_name_server.txt). Keep it "
+        + "OUTSIDE the game's Logs folder, or EQBuddy will follow it as if it were you. Their "
+        + "kills, damage, healing, loot and money join your duo totals; their casts feed the "
+        + "mez tracker. Their XP is NOT pooled with yours — it's a percentage of a different "
+        + "level bar — and neither is their faction standing, AA, or any other per-character "
+        + "progress; those stay theirs. World lines your own log already shows, and their "
+        + "character state (level, AA, buffs on them), are skipped.";
+
     /// <summary>What the title-bar readout is and why it exists. Hangs on
     /// <c>_perfStats</c>.</summary>
     private const string PerfReadoutBlurb =
@@ -595,7 +608,8 @@ internal sealed class SettingsBehaviorView
             () => { if (Ready) _vm.ArchiveLogs = _archive.IsChecked == true; });
         panel.Children.Add(HintRow(_archive, ArchiveBlurb, new Thickness(20, 6, 0, 0)));
 
-        panel.Children.Add(Heading("Teammate log", margin: new Thickness(0, 14, 0, 0)));
+        panel.Children.Add(HintRow(Heading("Teammate log", margin: new Thickness(0)), TeammateLogBlurb,
+            new Thickness(0, 14, 0, 0)));
         var teammateRow = new StackPanel { Orientation = Orientation.Horizontal };
         _teammatePathLabel = new TextBlock
         {
@@ -619,15 +633,6 @@ internal sealed class SettingsBehaviorView
         teammateClear.Click += (_, _) => OnClearTeammateLog();
         teammateRow.Children.Add(teammateClear);
         panel.Children.Add(teammateRow);
-        panel.Children.Add(Dim(
-            "Also read a teammate's log (a synced copy of their eqlog_name_server.txt). Keep it "
-            + "OUTSIDE the game's Logs folder, or EQBuddy will follow it as if it were you. Their "
-            + "kills, damage, healing, loot and money join your duo totals; their casts feed the "
-            + "mez tracker. Their XP is NOT pooled with yours — it's a percentage of a different "
-            + "level bar — and neither is their faction standing, AA, or any other per-character "
-            + "progress; those stay theirs. World lines your own log already shows, and their "
-            + "character state (level, AA, buffs on them), are skipped.",
-            new Thickness(0, 4, 0, 0)));
 
         return panel;
     }

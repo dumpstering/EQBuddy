@@ -43,6 +43,7 @@ teammate isolation" for the full model and the field-by-field combine table.
 | Every parsed teammate event applies to their OWN instance unconditionally; none of it ever reaches the watched character's own kills, loot, faction, class inference, or version counter | **Auto** — `TeammateActorLocalGuardTests` (the six-plus named misattribution families, rewritten against the isolated-instance design), `TeammateIsolationTests.ATeammateEventNeverBumpsTheWatchedSessionsVersion` |
 | A teammate's loot never appears in the watched character's own inventory overlay (`ItemsGainedSince`) | **Auto** — `TeammateIsolationTests.ATeammatesLootDoesNotAppearInYourInventoryOverlay` |
 | **`DuoStats.Combine` classifies EVERY `StatsSnapshot` property as combined or pass-through — a new property shipped unclassified fails the build** | **Auto** — `DuoStatsTests.EveryStatsSnapshotPropertyIsClassifiedAsCombinedOrPassedThrough` |
+| **`LastLevelAt` — the log timestamp a level-up announces at — travels alongside `LastLevel` through both `DuoStats.Combine` and `DuoStats.CombineSameActorCarry`, not just the number** — dropping it silently loses `MainWindow`'s tick-site gate on `QuestLedger.SetLevel` (DRA-71 D3) for the whole duration of a duo session | **Auto** — `DuoStatsTests.LastLevelAtTravelsWithLastLevelThroughBothCombinePaths` |
 | Kills/damage/heals/loot/money sum; XP, faction, and per-character progress never pool; `PartyKillCount` stays yours (would double-count); rates recompute rather than summing two rates | **Auto** — `DuoStatsTests.DuoKillsSumButPartyKillsDoNot`, `.DuoXpIsNotSummed`, `.DuoDpsRecomputesRatherThanSummingRates` |
 | The archiver, the 5-minute checkpoint, and the wiki pack all record the watched character ALONE — never the duo-combined view | **Auto** — `DuoStatsTests.TheArchiverStillRecordsTheWatchedCharacterAlone` |
 | Desktop AND Mobile duo versions move with either actor (2026-09-17: Mobile now carries duo totals, reversing the earlier primary-only call); the pump's gate and its reconciliation tick's `Observe` are always fed the SAME version (`DuoVersion`), with recent-window and tracked-rule arguments preserved | **Auto** — `DuoStatsTests.TheDuoVersionMovesWhenOnlyTheTeammateMoves`, `TeammateReviewRegressionTests.LiveActivityAndVersionSurviveCarryFolding`, `MobileDuoPumpVersionTests` (reproduces the gate/observe mismatch leak directly, then proves `DuoVersion` on both sides closes it, across all four rollover cases); Mobile call sites checked by static inspection — `MainWindow.xaml.cs` has no test project (§5) |
@@ -901,7 +902,7 @@ so it can be pinned without an audio device. Both UIs obey the same plan.
 
 ## 5. The gap — read this before trusting the suite
 
-**`src/EQBuddy` (the WPF app, 41,410 lines across 116 files) has no automated coverage.
+**`src/EQBuddy` (the WPF app, 41,502 lines across 117 files) has no automated coverage.
 No test project references it.** (Size pinned by `DocumentationSizeTests` — it was still
 claiming 14,432 across 37 on 2026-08-24, understating the untested surface by a third.)
 

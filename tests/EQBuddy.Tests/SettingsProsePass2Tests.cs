@@ -78,6 +78,11 @@ public class SettingsProsePass2Tests
         (Behavior, "AutoEmptyBlurb", "HintRow(_truncate, AutoEmptyBlurb"),
         (Behavior, "ArchiveBlurb", "HintRow(_archive, ArchiveBlurb"),
         (Behavior, "PerfReadoutBlurb", "HintRow(_perfStats, PerfReadoutBlurb"),
+        // teammate-log sync onto upstream c8259fe3: same "hung on a HEADING" shape as
+        // HotkeysBlurb above — the teammate row is rebuilt whenever the path changes
+        // (OnChooseTeammateLog/OnClearTeammateLog), so the heading is the one anchor
+        // that survives that.
+        (Behavior, "TeammateLogBlurb", "HintRow(Heading(\"Teammate log\", margin: new Thickness(0)), TeammateLogBlurb"),
     ];
 
     public static TheoryData<string, string, string> MovedRows()

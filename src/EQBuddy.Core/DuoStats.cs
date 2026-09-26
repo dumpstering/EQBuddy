@@ -279,6 +279,7 @@ public static class DuoStats
             AaPerHour = mine.AaPerHour,
             Levels = mine.Levels,
             LastLevel = mine.LastLevel,
+            LastLevelAt = mine.LastLevelAt,
             SkillUps = mine.SkillUps,
             SkillUpTotal = mine.SkillUpTotal,
             // Each character has their own faction standing with an NPC faction.
@@ -454,6 +455,7 @@ public static class DuoStats
             AaAbilities = ended.AaAbilities,
             Levels = ended.Levels,
             LastLevel = ended.LastLevel,
+            LastLevelAt = ended.LastLevelAt,
             SkillUps = ended.SkillUps,
             Faction = ended.Faction,
             Zones = ended.Zones,

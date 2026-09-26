@@ -116,6 +116,7 @@ public class DuoStatsTests
         [nameof(StatsSnapshot.MaxHitDesc)] = "from whichever side owns the max",
         [nameof(StatsSnapshot.CombatSeconds)] = "repair round B3/C7: the real union of both sides' combat spans (falls back to max only when DuoSnapshot's combatSecondsOverride is unavailable)",
         [nameof(StatsSnapshot.SessionDps)] = "recompute: combined damage / combined CombatSeconds",
+        [nameof(StatsSnapshot.PetDps)] = "computed getter (PetAbilities.Sum / CombatSeconds) — both inputs are already Combined above, so this follows for free",
         [nameof(StatsSnapshot.CurrentDps)] = "AMBIGUOUS, resolved: sum two live rates, documented approximation",
         [nameof(StatsSnapshot.DamageTaken)] = "sum",
         [nameof(StatsSnapshot.AvoidedIncoming)] = "sum",
@@ -211,6 +212,11 @@ public class DuoStatsTests
         [nameof(StatsSnapshot.AaPerHour)] = "character-scoped purchases",
         [nameof(StatsSnapshot.Levels)] = "yours",
         [nameof(StatsSnapshot.LastLevel)] = "yours",
+        // DRA-71 D3 (upstream 593af9ef): the log's timestamp travels with the announced
+        // level so MainWindow's tick can gate QuestLedger.SetLevel on ObservedLevelFor —
+        // same passthrough as LastLevel itself, and DuoStats.Combine/CombineSameActorCarry
+        // must copy both or a level-up during a duo session is silently never persisted.
+        [nameof(StatsSnapshot.LastLevelAt)] = "yours — travels with LastLevel (DRA-71 D3)",
         [nameof(StatsSnapshot.SkillUps)] = "yours",
         [nameof(StatsSnapshot.SkillUpTotal)] = "yours",
         [nameof(StatsSnapshot.Faction)] = "each character has their own standing — non-negotiable",
@@ -952,6 +958,35 @@ public class DuoStatsTests
         Assert.Equal("Kick", row.Name);
         Assert.Equal(8, row.Hits);
         Assert.Equal(800, row.Total);
+    }
+
+    /// <summary>Regression for the sync onto upstream c8259fe3 (DRA-71 D3):
+    /// <c>LastLevel</c> travels through both <see cref="DuoStats.Combine"/> and
+    /// <see cref="DuoStats.CombineSameActorCarry"/>, but <c>LastLevelAt</c> — the log
+    /// timestamp upstream added alongside it so MainWindow's tick can gate
+    /// <c>QuestLedger.SetLevel</c> on <c>ObservedLevelFor</c> — did not, because this
+    /// branch's <see cref="StatsSnapshot"/> predates that upstream field. Left
+    /// unfixed, a level-up during a duo session carries a level number with no
+    /// timestamp attached, <c>s.LastLevelAt is { } announcedAt</c> at the tick site
+    /// never matches, and the ding is silently never persisted to the quest ledger.
+    /// Confirmed to FAIL (both asserts) by reverting the two <c>LastLevelAt = …</c>
+    /// lines this commit adds to <c>DuoStats.cs</c>.</summary>
+    [Fact]
+    public void LastLevelAtTravelsWithLastLevelThroughBothCombinePaths()
+    {
+        var announcedAt = new DateTime(2026, 9, 20, 14, 30, 0);
+        var mine = new StatsSnapshot { LastLevel = 43, LastLevelAt = announcedAt };
+        var mate = new StatsSnapshot { LastLevel = 12, LastLevelAt = announcedAt.AddMinutes(-5) };
+
+        var combined = DuoStats.Combine(mine, mate);
+        Assert.Equal(43, combined.LastLevel);
+        Assert.Equal(announcedAt, combined.LastLevelAt);
+
+        var carry = new StatsSnapshot { LastLevel = 40, LastLevelAt = announcedAt.AddDays(-1) };
+        var ended = new StatsSnapshot { LastLevel = 43, LastLevelAt = announcedAt };
+        var folded = DuoStats.CombineSameActorCarry(carry, ended);
+        Assert.Equal(43, folded.LastLevel);
+        Assert.Equal(announcedAt, folded.LastLevelAt);
     }
 
     [Fact]
