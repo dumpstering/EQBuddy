@@ -92,6 +92,15 @@ public class DeadSettingTests
         // is the question this list exists to ask — a player who set it keeps it, and
         // EQBUDDY_TEXTMODE overrides on either platform.
         ["WineWholePixelText"] = "no UI since E-2d — Wine/Proton escape hatch; EQBUDDY_TEXTMODE overrides",
+
+        // own-log-teammates STEP 2: added ahead of its Options -> Behavior UI on
+        // purpose (the risky part — wiring a net-zero-budget MainWindow/
+        // SettingsBehaviorView change and retiring the file-based teammate feature —
+        // is deliberately deferred to its own reviewed slice; see this task's
+        // handoff notes). DerivedTeammates/TeammateRoster already read a caller-
+        // supplied manual-name list; the write path (the Options control that
+        // populates this exact property) is the missing half.
+        ["TeammateNames"] = "STEP 2 partial — DerivedTeammates reads it via a caller-supplied list; the Options UI writer is deferred to its own slice",
     };
 
     [Fact]
