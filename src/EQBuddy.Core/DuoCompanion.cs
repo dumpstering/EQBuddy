@@ -279,6 +279,83 @@ public sealed partial class SessionStats
         return union + mineUntracked + mateUntracked + carryCombatSeconds;
     }
 
+    /// <summary>Audit finding: <c>DuoStats.CombineRecent</c> used to sum two
+    /// independently-windowed rates (<c>Dps = mine.Dps + mate.Dps</c>) — each already
+    /// divided by THAT side's own combat-seconds-in-window denominator, so two
+    /// non-overlapping 10-second fights of 1,000 damage each summed to 200 DPS where
+    /// the true rate over the 20-second union is 100, and the overstatement compounds
+    /// with every teammate folded in. This returns the RAW numerator — damage/healing
+    /// actually dealt in the last <paramref name="window"/> before this instance's own
+    /// last event — and that window's own combat spans, clipped to it, so a caller can
+    /// build the exact N-way union across a roster of any size (the same shape
+    /// <see cref="UnionCombatSeconds"/> already does for the whole-session figure) and
+    /// recompute the rate ONCE, never sum it. Free access to <c>_journal</c>/
+    /// <c>_combatSpans</c> for the same reason as everywhere else in this file: sealed
+    /// partial. A disconnected span list; the caller mutates it freely. No event this
+    /// instant (nothing has happened yet) returns all-zero/empty rather than
+    /// throwing.</summary>
+    internal (double Damage, double Healing, List<(DateTime Start, DateTime End)> Spans) SnapshotRecentWindowForCombine(TimeSpan window)
+    {
+        lock (_lock)
+        {
+            if (_lastEventTime is not { } winEnd) return (0, 0, []);
+            var winStart = winEnd - window;
+            double dmg = 0, healed = 0;
+            for (var i = _journal.Count - 1; i >= 0; i--)
+            {
+                var evt = _journal[i];
+                if (evt.Time < winStart) break;
+                switch (evt)
+                {
+                    case DamageDealtEvent dd: dmg += dd.Amount; break;
+                    case HealEvent { Outgoing: true } h: healed += h.Amount; break;
+                }
+            }
+            // Raw (unfloored) spans clipped to the window — exactly the shape
+            // Snapshot's own combatInWindow walk uses (it reads _combatSpans/
+            // _combatStart/_combatLast directly, never the floored copy
+            // SnapshotCombatSpans returns for the whole-session union). The
+            // "at least 1 second when there was damage" floor Snapshot applies
+            // AFTER summing every overlap is the caller's job here too — applying
+            // it per-side, before a multi-actor union, would double-count whenever
+            // more than one side's own single-hit floor fell inside the same
+            // overlapping second.
+            var spans = new List<(DateTime Start, DateTime End)>();
+            foreach (var (s, e) in _combatSpans)
+            {
+                var os = s > winStart ? s : winStart;
+                var oe = e < winEnd ? e : winEnd;
+                if (oe > os) spans.Add((os, oe));
+            }
+            if (_combatStart is { } cs && _combatLast is { } cl)
+            {
+                var os = cs > winStart ? cs : winStart;
+                var oe = cl < winEnd ? cl : winEnd;
+                if (oe > os) spans.Add((os, oe));
+            }
+            return (dmg, healed, spans);
+        }
+    }
+
+    /// <summary>Atomically takes a snapshot and its own combat-span accounting under
+    /// ONE hold of <c>_lock</c> — see repair round C7's comment on
+    /// <see cref="BuildDuoSnapshot"/> for why the two must never be captured as
+    /// separate statements (a concurrent mutation between them could put a span NEWER
+    /// than what the snapshot's own <c>DamageDealt</c> accounts for into a caller's
+    /// union denominator). Exposed for <see cref="TeammateCombine"/>'s live-instance
+    /// overload, which needs the exact same atomic pairing for a roster of any size,
+    /// not only one file-based companion.</summary>
+    public (StatsSnapshot Snapshot, List<(DateTime Start, DateTime End)> Spans, double Untracked)
+        SnapshotWithSpansForCombine(TimeSpan? recentWindow, IReadOnlyList<TrackedRule>? rules)
+    {
+        lock (_lock)
+        {
+            var snap = Snapshot(recentWindow, rules);
+            var (spans, untracked) = SnapshotCombatSpans();
+            return (snap, spans, untracked);
+        }
+    }
+
     /// <summary>Public wrapper for <see cref="SnapshotCombatSpans"/> — <see cref="TeammateCombine"/>'s
     /// live-instance overload needs a derived teammate's own spans (and the primary's)
     /// to build an exact N-way combat-seconds union across a whole roster, the same way
@@ -329,8 +406,19 @@ public sealed partial class SessionStats
     /// own activity — invisible to <see cref="CurrentVersion"/> alone — moves the pushed
     /// snapshot's <c>Version</c> without ever satisfying the gate, and the 50 ms pump
     /// pushes to the phone forever. With no teammate this equals <see cref="CurrentVersion"/>
-    /// exactly, so the no-teammate path is unchanged.</summary>
-    public long DuoVersion => CurrentVersion + (Companion?.CurrentVersion ?? 0);
+    /// exactly, so the no-teammate path is unchanged.
+    ///
+    /// <b>Audit finding:</b> while <see cref="TeammateClockOffsetExceedsThreshold"/> is
+    /// true, <see cref="BuildDuoSnapshot"/> refuses to combine and pushes the SOLO
+    /// snapshot (whose <c>Version</c> is <see cref="CurrentVersion"/> alone) for as long
+    /// as the drift lasts — this must read exactly the same branch, or the companion's
+    /// own activity keeps moving the sum here while the pushed snapshot's Version stays
+    /// pinned to the primary's, so the gate never again agrees with what was last pushed
+    /// and the pump re-sends the identical, unchanged snapshot every reconciliation tick
+    /// until the drift clears.</summary>
+    public long DuoVersion => Companion is null || TeammateClockOffsetExceedsThreshold
+        ? CurrentVersion
+        : CurrentVersion + Companion.CurrentVersion;
 
     /// <summary>The combined snapshot for display — <see cref="MainWindow.BuildSnapshot"/>'s
     /// one call site. <paramref name="rules"/> is applied ONLY to the watched
@@ -425,8 +513,26 @@ public sealed partial class SessionStats
         // Repair round C3: the TRUE per-target count of the teammate's promoted
         // kills as seen in MY OWN log — see _promotedPartyKillsByTarget's own doc.
         var mateVisibleKillsByTarget = SnapshotPromotedPartyKillsByTarget();
+        // Audit finding: an exact recent-window union (see CombineRecentExact's own
+        // doc) rather than DuoStats.CombineRecent's old "sum two already-divided
+        // rates" — the companion's carry is deliberately not folded into the window
+        // spans here: the window is short, and a carry only exists the instant a
+        // rollover just happened, which is the same known limitation the carry
+        // already has in the recent-window figure it reports on its own.
+        DuoStats.RecentWindowTotals? recentWindowTotals = null;
+        if (recentWindow is { } win)
+        {
+            var (mineDmg, mineHealed, mineWinSpans) = SnapshotRecentWindowForCombine(win);
+            var (mateDmg, mateHealed, mateWinSpans) = companion.SnapshotRecentWindowForCombine(win);
+            var winUnion = UnionCombatSeconds(mineWinSpans, 0, mateWinSpans, 0, 0);
+            // Same "at least 1 second when there was real damage" floor Snapshot's own
+            // combatInWindow applies, moved to the COMBINED total so a single hit on
+            // each side inside the same overlapping second cannot double the floor.
+            if (winUnion < 1 && mineDmg + mateDmg > 0) winUnion = 1;
+            recentWindowTotals = new DuoStats.RecentWindowTotals(mineDmg, mineHealed, mateDmg, mateHealed, winUnion);
+        }
         var combined = DuoStats.Combine(mine, effectiveMate, companion.CharacterName, combatSecondsOverride,
-            mateVisibleKillsByTarget);
+            mateVisibleKillsByTarget, recentWindowTotals);
         lock (_lock) _duoMemo = (mine, mate, combined);
         return combined;
     }

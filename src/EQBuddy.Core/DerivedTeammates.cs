@@ -49,6 +49,19 @@ public sealed class DerivedTeammates
     private readonly Dictionary<string, Dictionary<string, int>> _deathKillers =
         new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Audit finding: the teammate's own <c>SessionStats</c> rolls over on a
+    /// 60-minute gap independently of <see cref="Reset"/> (a character switch), and
+    /// <see cref="_deathKillers"/> used to be cleared only by the latter — so a death
+    /// from an earlier SESSION survived a rollover and was later subtracted from a
+    /// fresh session's <c>PartyKillsByKiller</c> row for the same killer name, deleting
+    /// real party kills the new session actually earned. Tracks each teammate's last
+    /// observed <see cref="SessionStats.SessionStartSnapshot"/>; a change (checked
+    /// before every death is recorded) means that teammate's instance rolled over
+    /// since the last death was captured, so their stale death-killer counts are
+    /// dropped first.</summary>
+    private readonly Dictionary<string, DateTime?> _deathKillerSessionStart =
+        new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Every teammate this session has ever applied an event for — a superset
     /// of the CURRENT roster, since a name dropped from the roster (an exclusion
     /// learned later, or removed from the manual list) still owns whatever isolated
@@ -118,6 +131,16 @@ public sealed class DerivedTeammates
         {
             var evt = LogParser.Parse(ts, line.Line);
             if (evt is null) continue;
+            // Audit finding: this actor's own SessionStats may have rolled over (a
+            // 60-minute gap) since the last death was recorded for them — drop any
+            // death-killer counts from the session that just ended before adding to
+            // (or reading) this one. Checked on every line, not only death lines, so
+            // a rollover is caught even when the very next event isn't itself a death.
+            var actorStats = GetOrCreate(line.Actor);
+            var actorSessionStart = actorStats.SessionStartSnapshot;
+            if (_deathKillerSessionStart.TryGetValue(line.Actor, out var knownStart) && knownStart != actorSessionStart)
+                _deathKillers.Remove(line.Actor);
+            _deathKillerSessionStart[line.Actor] = actorSessionStart;
             // Finding: the pairing needed to correct a teammate death's misfiled
             // killer-row (see TeammateCombine) is exact ONLY when captured here, off
             // the just-parsed event itself, before TagPet/Apply ever touch it — a
@@ -139,7 +162,7 @@ public sealed class DerivedTeammates
             // a pet's kill still counts as the owner's kill, matching how upstream
             // already folds the PRIMARY's own pet kills into YourKillCount.
             if (line.IsPet) evt = TagPet(evt);
-            GetOrCreate(line.Actor).Apply(evt);
+            actorStats.Apply(evt);
             appliedTo.Add(line.Actor);
         }
         return appliedTo;
@@ -248,6 +271,7 @@ public sealed class DerivedTeammates
             _roster.Reset();
             _stats.Clear();
             _deathKillers.Clear();
+            _deathKillerSessionStart.Clear();
         }
     }
 }

@@ -74,7 +74,8 @@ public static class DuoStats
     /// subtraction.</summary>
     public static StatsSnapshot Combine(StatsSnapshot mine, StatsSnapshot? mate,
         string? mateCharacterName = null, double? combatSecondsOverride = null,
-        IReadOnlyDictionary<string, int>? mateVisibleKillsByTarget = null)
+        IReadOnlyDictionary<string, int>? mateVisibleKillsByTarget = null,
+        RecentWindowTotals? recentWindowTotals = null)
     {
         if (mate is null) return mine;
 
@@ -207,7 +208,9 @@ public static class DuoStats
             SoldItems = MergeSold(mine.SoldItems, mate.SoldItems),
             CopperPerHour = (long)(combinedCopper / hours),
             CopperPerActiveHour = (long)(combinedCopper / activeHours),
-            Recent = CombineRecent(mine.Recent, mate.Recent),
+            Recent = recentWindowTotals is { } rwt
+                ? CombineRecentExact(mine.Recent, mate.Recent, rwt)
+                : CombineRecent(mine.Recent, mate.Recent),
             // Repair round B4: see the comment on mateLabel above for why these tag
             // rather than sum, and DECISIONS.md for the product call.
             DamageBySource = combinedDamageBySource,
@@ -633,9 +636,14 @@ public static class DuoStats
     }
 
     /// <summary>Window/HasFullWindow/XpPercent/XpPerHour anchor on <paramref name="mine"/>
-    /// (percentages of a level bar, exactly like the top-level XP fields); Kills/Copper/
-    /// Dps/Hps sum. Either side missing (a snapshot taken before the first Recent window
-    /// closed) returns the other unchanged rather than fabricating one.</summary>
+    /// (percentages of a level bar, exactly like the top-level XP fields); Kills/Copper
+    /// sum. <b>Audit finding (kept as the no-window-data fallback only):</b> Dps/Hps here
+    /// are each side's OWN already-divided rate summed together, which double-reports
+    /// two non-overlapping fights as one continuous one — see
+    /// <see cref="CombineRecentExact"/>, used whenever a caller supplies
+    /// <see cref="RecentWindowTotals"/>. Either side missing (a snapshot taken before the
+    /// first Recent window closed) returns the other unchanged rather than fabricating
+    /// one.</summary>
     private static RecentRates? CombineRecent(RecentRates? mine, RecentRates? mate)
     {
         if (mine is null) return mate;
@@ -646,6 +654,36 @@ public static class DuoStats
             Copper = mine.Copper + mate.Copper,
             Dps = mine.Dps + mate.Dps,
             Hps = mine.Hps + mate.Hps,
+        };
+    }
+
+    /// <summary>The raw numerator each side actually dealt in the shared recent window —
+    /// <see cref="SessionStats.SnapshotRecentWindowForCombine"/> — plus the exact UNION
+    /// of both sides' combat spans clipped to that window (built by the caller with
+    /// <see cref="DuoCompanion.UnionCombatSeconds"/> or its own running fold across a
+    /// roster, the same shape the whole-session <c>combatSecondsOverride</c> already
+    /// uses). Passing this to <see cref="Combine"/> makes it recompute Dps/Hps ONCE from
+    /// the summed numerator over the union denominator, instead of summing two
+    /// independently-windowed rates (<see cref="CombineRecent"/>'s bug).</summary>
+    public readonly record struct RecentWindowTotals(
+        double MineDamage, double MineHealing, double MateDamage, double MateHealing, double CombatSecondsInWindow);
+
+    /// <summary>Audit finding fix: Dps/Hps are RECOMPUTED from the summed window
+    /// numerator over the exact union denominator — never summed as two already-divided
+    /// rates. Kills/Copper still sum (true, unrelated to the rate arithmetic). Either
+    /// side missing returns the other unchanged, matching <see cref="CombineRecent"/>.</summary>
+    private static RecentRates? CombineRecentExact(RecentRates? mine, RecentRates? mate, RecentWindowTotals w)
+    {
+        if (mine is null) return mate;
+        if (mate is null) return mine;
+        var dmg = w.MineDamage + w.MateDamage;
+        var healed = w.MineHealing + w.MateHealing;
+        return mine with
+        {
+            Kills = mine.Kills + mate.Kills,
+            Copper = mine.Copper + mate.Copper,
+            Dps = w.CombatSecondsInWindow > 0 ? dmg / w.CombatSecondsInWindow : 0,
+            Hps = w.CombatSecondsInWindow > 0 ? healed / w.CombatSecondsInWindow : 0,
         };
     }
 }

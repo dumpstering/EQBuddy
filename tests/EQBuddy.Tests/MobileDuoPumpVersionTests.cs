@@ -171,4 +171,44 @@ public class MobileDuoPumpVersionTests
 
         Assert.Equal(mine.DuoVersion, mine.DuoSnapshot(null, null).Version);
     }
+
+    /// <summary>
+    /// Audit finding: <see cref="SessionStats.DuoVersion"/> used to add the companion's
+    /// version unconditionally, while <see cref="SessionStats.BuildDuoSnapshot"/> (via
+    /// <see cref="SessionStats.DuoSnapshot"/>) refuses to combine and pushes the SOLO
+    /// snapshot for as long as <see cref="SessionStats.TeammateClockOffsetExceedsThreshold"/>
+    /// stays true. The two disagreed for the whole time the drift lasted, so the gate
+    /// pushed an unchanged snapshot every reconciliation tick.
+    /// </summary>
+    [Fact]
+    public void GateAndObservedVersionAgree_WhileClockDriftPausesCombining()
+    {
+        var mine = new SessionStats();
+        var mate = new SessionStats();
+        mine.Companion = mate;
+        mine.Apply(Kill(T0));
+        mate.Apply(Kill(T0.AddSeconds(5)));
+
+        // A ten-minute offset sample exceeds ClockDriftEstimator's own threshold.
+        mine.RecordClockDriftSample(T0.AddMinutes(10), T0);
+        Assert.True(mine.TeammateClockOffsetExceedsThreshold,
+            "the reproduction itself is broken — this sample should exceed the threshold");
+
+        Assert.Equal(mine.DuoVersion, mine.DuoSnapshot(null, null).Version);
+    }
+
+    [Fact]
+    public void ThePumpDoesNotLeakPushesWhileClockDriftPausesCombining()
+    {
+        var mine = new SessionStats();
+        var mate = new SessionStats();
+        mine.Companion = mate;
+        mine.Apply(Kill(T0));
+        mate.Apply(Kill(T0.AddSeconds(5)));
+        mine.RecordClockDriftSample(T0.AddMinutes(10), T0);
+
+        var pushes = CountPushesOverManyTicks(mine, gateUsesDuoVersion: true);
+
+        Assert.Equal(0, pushes);
+    }
 }

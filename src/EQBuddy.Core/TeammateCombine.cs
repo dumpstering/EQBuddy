@@ -103,19 +103,39 @@ public static class TeammateCombine
     /// <see cref="DerivedTeammates"/>'s internal store) — reading their combat spans is
     /// safe under the same isolation invariant that already lets their
     /// <see cref="SessionStats.Snapshot()"/> be read here. <paramref name="deathKillers"/>
-    /// is optional — see the snapshot-only overload's own doc.</summary>
+    /// is optional — see the snapshot-only overload's own doc.
+    ///
+    /// <b>Audit finding (fixed):</b> this overload used to build both the primary's and
+    /// every teammate's snapshot with the argument-less <c>Snapshot()"</c> — no
+    /// <paramref name="recentWindow"/>, no <paramref name="rules"/> — so <c>Recent</c>
+    /// was always null and <c>Tracked</c> always empty on the combined result, no matter
+    /// what the caller (once wired in) actually asked for. <paramref name="recentWindow"/>
+    /// is applied to every side (teammates always with <c>rules: null</c>, matching
+    /// <see cref="DuoCompanion.BuildDuoSnapshot"/>'s own Part 1c rule — a Text-watch
+    /// match must never be evaluated against a session nothing subscribes to); the
+    /// primary's snapshot and its own combat-span accounting are taken together under
+    /// ONE lock via <see cref="SessionStats.SnapshotWithSpansForCombine"/>, the same
+    /// atomic pairing <c>BuildDuoSnapshot</c> uses for its own single companion.</summary>
     public static StatsSnapshot Combine(SessionStats primary, IReadOnlyDictionary<string, SessionStats> teammates,
-        IReadOnlyDictionary<string, IReadOnlyDictionary<string, int>>? deathKillers = null)
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, int>>? deathKillers = null,
+        TimeSpan? recentWindow = null, IReadOnlyList<TrackedRule>? rules = null)
     {
-        var primarySnapshot = primary.Snapshot();
+        var (primarySnapshot, spans, untracked) = primary.SnapshotWithSpansForCombine(recentWindow, rules);
         if (teammates.Count == 0) return primarySnapshot;
 
-        var (spans, untracked) = primary.SnapshotCombatSpansForCombine();
+        // Audit finding: an exact recent-window union (see DuoStats.CombineRecentExact's
+        // own doc) rather than the old "sum two already-divided rates" — folded
+        // alongside the whole-session span union below, on the same window-clipped
+        // spans DerivedTeammates' own SessionStats already track.
+        double mineWindowDamage = 0, mineWindowHealing = 0;
+        var windowSpans = new List<(DateTime Start, DateTime End)>();
+        if (recentWindow is { } win)
+            (mineWindowDamage, mineWindowHealing, windowSpans) = primary.SnapshotRecentWindowForCombine(win);
+
         var result = primarySnapshot;
         foreach (var (name, mateStats) in teammates)
         {
-            var mate = mateStats.Snapshot();
-            var (mateSpans, mateUntracked) = mateStats.SnapshotCombatSpansForCombine();
+            var (mate, mateSpans, mateUntracked) = mateStats.SnapshotWithSpansForCombine(recentWindow, null);
             // Running union so far (primary + every teammate folded up to and
             // including this one) — recomputed on every fold, not only at the end,
             // matching the two-way path's own semantics.
@@ -123,7 +143,30 @@ public static class TeammateCombine
             untracked += mateUntracked;
             var combatSecondsOverride = SessionStats.UnionCombatSeconds(spans, 0, [], 0, untracked);
 
-            result = DuoStats.Combine(result, mate, name, combatSecondsOverride, BuildSubtract(mate, name));
+            DuoStats.RecentWindowTotals? recentWindowTotals = null;
+            if (recentWindow is { } w)
+            {
+                var (mateWindowDamage, mateWindowHealing, mateWindowSpans) = mateStats.SnapshotRecentWindowForCombine(w);
+                windowSpans.AddRange(mateWindowSpans);
+                var windowUnion = SessionStats.UnionCombatSeconds(windowSpans, 0, [], 0, 0);
+                // The running fold's own numerator for THIS teammate is the sum so
+                // far, matching how `spans`/`untracked` above accumulate the
+                // whole-session union across folds.
+                var totalWindowDamage = mineWindowDamage + mateWindowDamage;
+                var totalWindowHealing = mineWindowHealing + mateWindowHealing;
+                // Same "at least 1 second when there was real damage" floor Snapshot's
+                // own combatInWindow applies, moved to the COMBINED total so a single
+                // hit on each side inside the same overlapping second cannot double
+                // the floor.
+                if (windowUnion < 1 && totalWindowDamage > 0) windowUnion = 1;
+                recentWindowTotals = new DuoStats.RecentWindowTotals(
+                    mineWindowDamage, mineWindowHealing, mateWindowDamage, mateWindowHealing, windowUnion);
+                mineWindowDamage = totalWindowDamage;
+                mineWindowHealing = totalWindowHealing;
+            }
+
+            result = DuoStats.Combine(result, mate, name, combatSecondsOverride, BuildSubtract(mate, name),
+                recentWindowTotals);
             StripWarderKillerRows(result, name);
             if (deathKillers is not null && deathKillers.TryGetValue(name, out var killers))
                 SubtractDeathKillerRows(result, killers);

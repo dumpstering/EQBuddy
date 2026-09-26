@@ -359,5 +359,128 @@ public class TeammateFixesTests
             $"expected the union of two disjoint ~10s spans (~20s), got {combined.CombatSeconds}");
     }
 
+    // ---------------------------------------------------------------------
+    // DerivedTeammates: a death-killer count from a ROLLED-OVER teammate session
+    // must not survive into the fresh one (audit finding — was cleared only by
+    // Reset(), never by the teammate's own SessionGap rollover).
+    // ---------------------------------------------------------------------
+    [Fact]
+    public void DeathKillerCountsDoNotSurviveATeammateSessionRollover()
+    {
+        var derived = new DerivedTeammates();
+        var roster = new[] { "Garg" };
+
+        // Yesterday's session: Garg dies to a lizard defender.
+        derived.Observe(T, "Garg has been slain by a lizard defender!", Primary, null, roster);
+        Assert.Equal(1, derived.DeathKillersFor("Garg").GetValueOrDefault("a lizard defender"));
+
+        // A real multi-hour gap rolls GARG'S OWN isolated SessionStats over — this is
+        // independent of DerivedTeammates.Reset(), which only fires on a character
+        // switch. The rollover is detected by comparing SessionStartSnapshot BEFORE
+        // this line's own Apply() call, so it lags one line behind the roll itself —
+        // two lines after the gap is enough to observe it.
+        var next = T.AddHours(3);
+        derived.Observe(next, "Garg slashes a gnoll for 5 points of damage.", Primary, null, roster);
+        derived.Observe(next.AddSeconds(1), "Garg slashes a gnoll for 5 points of damage.", Primary, null, roster);
+
+        Assert.Empty(derived.DeathKillersFor("Garg"));
+    }
+
+    // ---------------------------------------------------------------------
+    // TeammateCombine + DerivedTeammates: a stale death-killer count that DID survive
+    // (the bug) would wrongly eat a genuine party kill of the same killer name in a
+    // later session — this is the finding's own worked example.
+    // ---------------------------------------------------------------------
+    [Fact]
+    public void StaleDeathKillerCountsFromAnEarlierSessionDoNotEatALaterPartyKill()
+    {
+        var primary = new SessionStats { CharacterName = Primary };
+        var derived = new DerivedTeammates();
+        var roster = new[] { "Garg" };
+
+        // Yesterday: Garg died to a lizard defender once.
+        derived.Observe(T, "Garg has been slain by a lizard defender!", Primary, null, roster);
+
+        // A real gap rolls Garg's own session over (see the test above for why two
+        // lines are needed to observe it).
+        var next = T.AddHours(3);
+        derived.Observe(next, "Garg slashes a gnoll for 5 points of damage.", Primary, null, roster);
+        derived.Observe(next.AddSeconds(1), "Garg slashes a gnoll for 5 points of damage.", Primary, null, roster);
+
+        // Today: a lizard defender genuinely kills a DIFFERENT groupmate (Ripto) —
+        // visible in the PRIMARY's own log as an ordinary third-party party kill,
+        // nothing to do with Garg's stale death from yesterday.
+        primary.Apply(LogParser.Parse(next.AddMinutes(1), "Ripto has been slain by a lizard defender!")!);
+
+        var deathKillers = new Dictionary<string, IReadOnlyDictionary<string, int>>
+        {
+            ["Garg"] = derived.DeathKillersFor("Garg"),
+        };
+        var combined = TeammateCombine.Combine(primary.Snapshot(), derived.Snapshots(Primary, null, roster), deathKillers);
+
+        // The bug would subtract yesterday's 1 death from today's genuine row and
+        // remove it outright (count - 1 <= 0). It must survive intact.
+        Assert.Contains(combined.PartyKillsByKiller, nc =>
+            nc.Name.Equals("a lizard defender", StringComparison.OrdinalIgnoreCase) && nc.Count == 1);
+    }
+
+    // ---------------------------------------------------------------------
+    // TeammateCombine: the live-instance overload must apply the SAME recentWindow
+    // (and rules, primary-only) every caller already gets from DuoCompanion's own
+    // single-companion path — the audit finding's "always null Recent, always empty
+    // Tracked" gap.
+    // ---------------------------------------------------------------------
+    [Fact]
+    public void TheLiveInstanceOverloadAppliesTheCallersRecentWindow()
+    {
+        var primary = new SessionStats { CharacterName = Primary };
+        var derived = new DerivedTeammates();
+        var roster = new[] { "Garg" };
+
+        primary.Apply(LogParser.Parse(T, "You slash a gnoll for 100 points of damage.")!);
+        derived.Observe(T, "Garg slashes a gnoll for 200 points of damage.", Primary, null, roster);
+        derived.Observe(T.AddSeconds(1), "A gnoll has been slain by Garg!", Primary, null, roster);
+
+        var liveTeammates = derived.LiveStats(Primary, null, roster);
+        var combined = TeammateCombine.Combine(primary, liveTeammates, recentWindow: TimeSpan.FromMinutes(5));
+
+        Assert.NotNull(combined.Recent);
+    }
+
+    // ---------------------------------------------------------------------
+    // DuoStats.CombineRecent (audit finding): the recent-window Dps/Hps must be
+    // RECOMPUTED from the summed numerator over the union denominator, never summed
+    // as two independently-windowed rates.
+    // ---------------------------------------------------------------------
+    [Fact]
+    public void RecentWindowDpsIsRecomputedFromTheUnionNotSummedAsTwoRates()
+    {
+        var primary = new SessionStats { CharacterName = Primary };
+        var derived = new DerivedTeammates();
+        var roster = new[] { "Garg" };
+
+        // Primary fights a real 5-second span, 500 damage per hit (true solo rate
+        // 200/s over that span)...
+        primary.Apply(LogParser.Parse(T, "You slash a froglok for 500 points of damage.")!);
+        primary.Apply(LogParser.Parse(T.AddSeconds(5), "You slash a froglok for 500 points of damage.")!);
+
+        // ...and Garg fights a DISJOINT real 5-second span half a minute later, same
+        // 200/s solo rate. The true COMBINED rate over the 10-second union of two
+        // disjoint 5-second spans is still 2,000 damage / 10s = 200/s. The old bug
+        // (summing each side's OWN already-divided rate: mine's 1000/5=200 PLUS
+        // Garg's own 1000/5=200, each anchored to that side's own window) read this
+        // as ~400 — double the true rate.
+        var gargStart = T.AddSeconds(30);
+        derived.Observe(gargStart, "Garg slashes a froglok for 500 points of damage.", Primary, null, roster);
+        derived.Observe(gargStart.AddSeconds(5), "Garg slashes a froglok for 500 points of damage.", Primary, null, roster);
+
+        var liveTeammates = derived.LiveStats(Primary, null, roster);
+        var combined = TeammateCombine.Combine(primary, liveTeammates, recentWindow: TimeSpan.FromMinutes(5));
+
+        Assert.NotNull(combined.Recent);
+        Assert.True(combined.Recent!.Dps is > 150 and < 250,
+            $"expected the union-recomputed rate near the true 200/s (old summed-rates bug reads ~400), got {combined.Recent.Dps}");
+    }
+
     private static StatsSnapshot NewPrimarySnapshot() => new SessionStats { CharacterName = Primary }.Snapshot();
 }
