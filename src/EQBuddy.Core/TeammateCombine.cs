@@ -59,13 +59,16 @@ namespace EQBuddy.Core;
 /// however many teammates the roster holds, so even a roster of exactly one derived
 /// teammate gets the real union rather than <c>Math.Max</c>.
 ///
-/// <b>Not corrected here (same gap as the single-companion killer breakdown):</b> the
-/// mob that killed a teammate keeps one extra "kill" credited to it in
-/// <see cref="StatsSnapshot.PartyKillsByKiller"/> — <c>NameCount</c> rows have no
-/// per-event pairing to know how much of that mob's count came from a real party kill
-/// versus this one misfiled death, so it is left alone rather than guessed at. This
-/// exists in the file-based feature today too, so this pass is no worse, not a new
-/// regression.
+/// <b>Corrected here (was: "not corrected", same gap as the single-companion killer
+/// breakdown):</b> the mob that killed a teammate used to keep one extra "kill"
+/// credited to it in <see cref="StatsSnapshot.PartyKillsByKiller"/> — <c>NameCount</c>
+/// rows have no per-event pairing of their own to know how much of that mob's count
+/// came from a real party kill versus a misfiled death. The pairing is available
+/// anyway: a derived teammate's own death-by-killer counts (<see cref="DerivedTeammates.DeathKillersFor"/>)
+/// are captured off the EXACT parsed event the death line produced, so subtracting
+/// them from the killer breakdown can never remove more than that teammate's own
+/// deaths actually put there, and never touches a row belonging to anyone else's real
+/// party kill. See <see cref="SubtractDeathKillerRows"/>.
 /// </summary>
 public static class TeammateCombine
 {
@@ -75,14 +78,19 @@ public static class TeammateCombine
     /// exactly). Snapshot-only: see the class doc for why this overload cannot compute
     /// an exact combat-seconds union and falls back to <c>Math.Max</c> per fold — use
     /// the <see cref="SessionStats"/> overload below when the live instances are at
-    /// hand.</summary>
-    public static StatsSnapshot Combine(StatsSnapshot primary, IReadOnlyDictionary<string, StatsSnapshot> teammates)
+    /// hand. <paramref name="deathKillers"/> is optional (defaults to none) — pass
+    /// <see cref="DerivedTeammates.DeathKillersFor"/> per teammate to also correct the
+    /// killer breakdown; omitting it leaves that residual exactly as before.</summary>
+    public static StatsSnapshot Combine(StatsSnapshot primary, IReadOnlyDictionary<string, StatsSnapshot> teammates,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, int>>? deathKillers = null)
     {
         var result = primary;
         foreach (var (name, mate) in teammates)
         {
             result = DuoStats.Combine(result, mate, name, combatSecondsOverride: null, BuildSubtract(mate, name));
             StripWarderKillerRows(result, name);
+            if (deathKillers is not null && deathKillers.TryGetValue(name, out var killers))
+                SubtractDeathKillerRows(result, killers);
         }
         return result;
     }
@@ -94,8 +102,10 @@ public static class TeammateCombine
     /// derived teammates' own isolated instances (e.g. from a snapshot of
     /// <see cref="DerivedTeammates"/>'s internal store) — reading their combat spans is
     /// safe under the same isolation invariant that already lets their
-    /// <see cref="SessionStats.Snapshot()"/> be read here.</summary>
-    public static StatsSnapshot Combine(SessionStats primary, IReadOnlyDictionary<string, SessionStats> teammates)
+    /// <see cref="SessionStats.Snapshot()"/> be read here. <paramref name="deathKillers"/>
+    /// is optional — see the snapshot-only overload's own doc.</summary>
+    public static StatsSnapshot Combine(SessionStats primary, IReadOnlyDictionary<string, SessionStats> teammates,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, int>>? deathKillers = null)
     {
         var primarySnapshot = primary.Snapshot();
         if (teammates.Count == 0) return primarySnapshot;
@@ -115,6 +125,8 @@ public static class TeammateCombine
 
             result = DuoStats.Combine(result, mate, name, combatSecondsOverride, BuildSubtract(mate, name));
             StripWarderKillerRows(result, name);
+            if (deathKillers is not null && deathKillers.TryGetValue(name, out var killers))
+                SubtractDeathKillerRows(result, killers);
         }
         return result;
     }
@@ -146,5 +158,29 @@ public static class TeammateCombine
         snapshot.PartyKillsByKiller.RemoveAll(nc =>
             nc.Name.Equals(apos, StringComparison.OrdinalIgnoreCase) ||
             nc.Name.Equals(tick, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Removes exactly <paramref name="killers"/>' counts from
+    /// <paramref name="snapshot"/>'s own <c>PartyKillsByKiller</c> — one misfiled row
+    /// per teammate death the primary's own log parsed as "&lt;teammate&gt; has been
+    /// slain by &lt;killer&gt;!" (a real <see cref="KillEvent"/> upstream's own
+    /// <c>SessionStats.Apply</c> files as an ordinary party kill of the teammate's
+    /// name, target-side corrected by <c>DuoStats.Combine</c>'s own sentinel, but whose
+    /// KILLER row it never touches). A killer row's count is reduced by exactly the
+    /// teammate's own death count for that killer, floored at zero, and the row is
+    /// dropped once its count reaches zero — never removed outright, so a killer that
+    /// ALSO earned genuine party kills against other targets keeps its residual
+    /// count.</summary>
+    private static void SubtractDeathKillerRows(StatsSnapshot snapshot, IReadOnlyDictionary<string, int> killers)
+    {
+        if (killers.Count == 0) return;
+        for (var i = snapshot.PartyKillsByKiller.Count - 1; i >= 0; i--)
+        {
+            var row = snapshot.PartyKillsByKiller[i];
+            if (!killers.TryGetValue(row.Name, out var deaths)) continue;
+            var remaining = row.Count - deaths;
+            if (remaining <= 0) snapshot.PartyKillsByKiller.RemoveAt(i);
+            else snapshot.PartyKillsByKiller[i] = row with { Count = remaining };
+        }
     }
 }

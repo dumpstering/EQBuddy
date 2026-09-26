@@ -126,10 +126,20 @@ public class DerivedTeammatesDoubleCountTests
 
         Assert.Equal(0, combined.PartyKillCount);
         Assert.DoesNotContain(combined.PartyKillsByTarget, nc => nc.Name.Equals("Garg", StringComparison.OrdinalIgnoreCase));
-        // Deliberately not asserted: PartyKillsByKiller still credits "a rock golem"
-        // with one kill it did not really make on a party member — see
-        // TeammateCombine's own doc for why that half is a stated, pre-existing gap
-        // rather than a regression introduced here.
+        // Without the optional deathKillers argument, the killer row is left exactly
+        // as before (a stated, opt-in gap, not a silent one) — "a rock golem" still
+        // shows one kill it did not really make on a party member.
+        Assert.Contains(combined.PartyKillsByKiller, nc => nc.Name.Equals("a rock golem", StringComparison.OrdinalIgnoreCase));
+
+        // Passing the derived teammate's own death-by-killer counts corrects it (audit
+        // finding, major): the killer breakdown must sum back to PartyKillCount.
+        var deathKillers = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Garg"] = derived.DeathKillersFor("Garg"),
+        };
+        var corrected = TeammateCombine.Combine(primary.Snapshot(), mates, deathKillers);
+        Assert.DoesNotContain(corrected.PartyKillsByKiller, nc => nc.Name.Equals("a rock golem", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(corrected.PartyKillCount, corrected.PartyKillsByKiller.Sum(nc => nc.Count));
     }
 
     // ---------------------------------------------------------------------

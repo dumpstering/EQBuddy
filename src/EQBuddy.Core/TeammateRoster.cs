@@ -76,8 +76,17 @@ public sealed class TeammateRoster
     /// each regex's own doc for the line it answers. A name dropped here does not
     /// lose the stats it already accrued: <see cref="DerivedTeammates.KnownTeammates"/>
     /// keeps every name this session has ever applied an event for regardless of
-    /// whether <see cref="Roster"/> still lists them.</summary>
-    public void Observe(string msg)
+    /// whether <see cref="Roster"/> still lists them.
+    ///
+    /// <paramref name="primaryName"/> disambiguates <see cref="RemovedFromPartyRx"/>:
+    /// the client logs the PRIMARY's own `/disband` as "You remove &lt;YourName&gt;
+    /// from the party." — the exact same shape as removing a groupmate, with the
+    /// primary's own name in the slot. Without checking for it, that line read as
+    /// "remove a member named `Smargush`" (never in the set, so a no-op) instead of
+    /// "the primary left/disbanded", and the roster was never cleared — a real,
+    /// observed log line (finding: 2026-08-29 `You remove Smargush from the
+    /// party.`), not a hypothetical.</summary>
+    public void Observe(string msg, string? primaryName)
     {
         if (string.IsNullOrEmpty(msg)) return;
 
@@ -86,7 +95,14 @@ public sealed class TeammateRoster
         else if ((m = AgreedToJoinRx.Match(msg)).Success) _autoDetected.Add(m.Groups["name"].Value);
         else if ((m = TellsGroupRx.Match(msg)).Success) _autoDetected.Add(m.Groups["name"].Value);
         else if ((m = LeftGroupRx.Match(msg)).Success) _autoDetected.Remove(m.Groups["name"].Value);
-        else if ((m = RemovedFromPartyRx.Match(msg)).Success) _autoDetected.Remove(m.Groups["name"].Value);
+        else if ((m = RemovedFromPartyRx.Match(msg)).Success)
+        {
+            var removed = m.Groups["name"].Value;
+            if (primaryName is { Length: > 0 } && string.Equals(removed, primaryName, StringComparison.Ordinal))
+                _autoDetected.Clear();
+            else
+                _autoDetected.Remove(removed);
+        }
         else if (UserRemovedRx.IsMatch(msg) || UserLeftOrDisbandedRx.IsMatch(msg)) _autoDetected.Clear();
         else if (msg[0] == 'T' && (m = TargetedNpcRx.Match(msg)).Success) _everNpc.Add(m.Groups["name"].Value);
     }

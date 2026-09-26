@@ -65,6 +65,52 @@ public class TeammateFixesTests
     }
 
     // ---------------------------------------------------------------------
+    // DerivedTeammates (audit finding, major): leaving the group must not erase
+    // stats already accrued while the teammate WAS a member — only stop FUTURE
+    // lines from being attributed to them.
+    // ---------------------------------------------------------------------
+    [Fact]
+    public void LeavingTheGroupDoesNotLoseStatsAlreadyAccrued()
+    {
+        var derived = new DerivedTeammates();
+        derived.Observe(T, "Ripto has joined the group.", Primary, null, null);
+        derived.Observe(T.AddSeconds(1),
+            "Ripto slashes a gnoll for 250 points of damage.", Primary, null, null);
+        derived.Observe(T.AddSeconds(2), "Ripto has left the group.", Primary, null, null);
+
+        Assert.DoesNotContain("Ripto", derived.Roster(Primary, null, null));
+
+        var mates = derived.Snapshots(Primary, null, null);
+        Assert.True(mates.ContainsKey("Ripto"));
+        Assert.Equal(250, mates["Ripto"].DamageDealt);
+
+        var combined = TeammateCombine.Combine(NewPrimarySnapshot(), mates);
+        Assert.Equal(250, combined.DamageDealt);   // not lost just because Ripto left
+    }
+
+    // ---------------------------------------------------------------------
+    // TeammateRoster (audit finding, major): a real, observed log line —
+    // "You remove <YourName> from the party." — is how the client logs the
+    // PRIMARY's own /disband, grammatically identical to removing a groupmate but
+    // with the PRIMARY's own name in the slot. It must clear the whole roster, not
+    // be read as "remove a member named <YourName>" (a no-op, since the primary is
+    // never in their own roster) that leaves every real groupmate still counting.
+    // ---------------------------------------------------------------------
+    [Fact]
+    public void SelfDisbandLineClearsTheRosterRatherThanBeingANoOp()
+    {
+        var derived = new DerivedTeammates();
+        derived.Observe(T, "Kellisanth has joined the group.", Primary, null, null);
+        derived.Observe(T.AddSeconds(1), $"You remove {Primary} from the party.", Primary, null, null);
+        derived.Observe(T.AddSeconds(2),
+            "Kellisanth slashes a rat for 500 points of damage.", Primary, null, null);
+
+        Assert.DoesNotContain("Kellisanth", derived.Roster(Primary, null, null));
+        var combined = TeammateCombine.Combine(NewPrimarySnapshot(), derived.Snapshots(Primary, null, null));
+        Assert.Equal(0, combined.DamageDealt);   // the post-disband hit is a bystander's, not "yours"
+    }
+
+    // ---------------------------------------------------------------------
     // TeammateRoster: "You have been removed from the group." clears everyone.
     // ---------------------------------------------------------------------
     [Fact]
@@ -168,7 +214,10 @@ public class TeammateFixesTests
 
     // ---------------------------------------------------------------------
     // DerivedTeammates: a teammate quiet for over an hour, while the primary keeps
-    // playing (no primary-side gap), does not lose their earlier contribution.
+    // playing REAL EVENTS (no primary-side gap), does not lose their earlier
+    // contribution — "You look around." (no event) would not do it: only a line the
+    // primary itself applies an event for may keep a teammate's clock alive on the
+    // primary's behalf (see Observe's own doc).
     // ---------------------------------------------------------------------
     [Fact]
     public void AQuietTeammateDoesNotLoseEarlierStatsMidPrimarySession()
@@ -180,9 +229,9 @@ public class TeammateFixesTests
         derived.Observe(T.AddMinutes(1), "A gnoll has been slain by Garg!", Primary, null, roster);
 
         // The primary keeps ticking every 10 minutes so ITS OWN session never gaps —
-        // Garg says nothing the whole time.
+        // a real parsed event each time — while Garg says nothing the whole time.
         for (var i = 1; i <= 9; i++)
-            derived.Observe(T.AddMinutes(10 * i), "You look around.", Primary, null, roster);
+            derived.Observe(T.AddMinutes(10 * i), "You slash a rat for 1 points of damage.", Primary, null, roster);
 
         // Garg speaks again at +91 minutes — over an hour of Garg-silence, but the
         // PRIMARY never had a 60-minute gap.
@@ -192,6 +241,40 @@ public class TeammateFixesTests
         var snap = derived.Snapshots(Primary, null, roster)["Garg"];
         Assert.Equal(505, snap.DamageDealt);   // 500 + 5, not just 5
         Assert.Equal(1, snap.YourKillCount);
+    }
+
+    // ---------------------------------------------------------------------
+    // DerivedTeammates (audit finding, major): a genuine multi-hour gap in the
+    // PRIMARY's own real activity — ordinary chat flowing the whole time, nothing
+    // that parses into an event or matches a Text rule — must roll a teammate over
+    // exactly as it would roll the primary over. Before the fix, DerivedTeammates
+    // ticked every known teammate's clock on EVERY raw line regardless of whether it
+    // parsed, so the chat itself (arriving every few minutes) kept Garg artificially
+    // "fresh" through a gap that is, from the primary's own perspective, event-silent
+    // and therefore session-rolling.
+    // ---------------------------------------------------------------------
+    [Fact]
+    public void AnEventSilentChattyGapRollsTheTeammateOverLikeThePrimaryWould()
+    {
+        var derived = new DerivedTeammates();
+        var roster = new[] { "Garg" };
+
+        derived.Observe(T, "Garg slashes a gnoll for 500 points of damage.", Primary, null, roster);
+        derived.Observe(T.AddMinutes(1), "A gnoll has been slain by Garg!", Primary, null, roster);
+
+        // 70 minutes of ordinary chat, none of it parseable and none of it naming
+        // Garg — every 5 minutes, so under the OLD (unconditional) tick this never
+        // let 60 minutes pass between two ticks, and the bug never rolled Garg over.
+        for (var i = 1; i <= 14; i++)
+            derived.Observe(T.AddMinutes(5 * i), $"Someone tells the guild, 'chatter {i}'", Primary, null, roster);
+
+        derived.Observe(T.AddMinutes(71), "Garg slashes a gnoll for 5 points of damage.", Primary, null, roster);
+
+        var snap = derived.Snapshots(Primary, null, roster)["Garg"];
+        // A genuine 70-minute gap in real activity must roll Garg's session exactly
+        // like the primary's own would — 5, not 505.
+        Assert.Equal(5, snap.DamageDealt);
+        Assert.Equal(0, snap.YourKillCount);
     }
 
     // ---------------------------------------------------------------------
