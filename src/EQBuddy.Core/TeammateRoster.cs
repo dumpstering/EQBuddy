@@ -7,8 +7,14 @@ namespace EQBuddy.Core;
 /// doesn't have to hand-type every teammate's name into settings. Pure incremental
 /// state, fed one raw (already-normalized) message at a time — no file I/O, no
 /// durable store, nothing persisted beyond the in-memory session this instance lives
-/// for. Merged with the user's own manually-typed list (<c>AppSettings.TeammateNames</c>)
-/// by <see cref="Roster"/>, which is the ONE place both sources combine.
+/// for.
+///
+/// <b>A name the player added by hand is a join, not a standing member.</b> Each one
+/// (<see cref="ManualTeammate"/>) joins at its own moment in the log — the start of the
+/// session it was added in — and from then on is a member like any other: the same leave,
+/// removal, disband and login lines end it (<see cref="ArmHandAdded"/>). It used to be
+/// unioned into <see cref="Roster"/> unconditionally, from a global list, so a name added
+/// once for one evening was whitelisted on every later day and on every other character.
 ///
 /// <b>Signals used (from the design survey):</b> join/leave/invite lines, "X tells the
 /// group", and "Targeted (NPC): X" / "X told you, '...'" (exclusions, never inclusions)
@@ -79,6 +85,18 @@ public sealed class TeammateRoster
     private readonly Dictionary<string, int> _partyXpKills = new(StringComparer.OrdinalIgnoreCase);
     private int _partyXpLinesLeft;
 
+    /// <summary>The hand-added joins for the watched character, oldest first, and how many
+    /// of them are behind the reader (joined, or already in the past when armed).</summary>
+    private (string Name, DateTime Since)[] _handAdded = [];
+    private int _handAddedPassed;
+
+    /// <summary>The time of the last line observed since the roster was armed or reset —
+    /// null before the first. A hand-added join older than the first line read is not
+    /// placed at that line: the log from its moment is not being read (a split log, review
+    /// mode), so whether the group still held is not known, and a whitelist only admits
+    /// what it knows.</summary>
+    internal DateTime? LastLine { get; private set; }
+
     /// <summary>The members detected when the player last logged in, held aside until
     /// that login's first party XP (the group survived: they come back) or its first group
     /// line or the next login (it did not: they are dropped).</summary>
@@ -95,9 +113,10 @@ public sealed class TeammateRoster
     /// counting a mob as a teammate.</summary>
     private readonly HashSet<string> _everNpc = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Names auto-detected so far this session (group joins/invites/tells).
-    /// Exposed read-only so Options → Behavior can show "detected: Garg, Yungweezy" —
-    /// never itself the roster; see <see cref="Roster"/> for exclusions.</summary>
+    /// <summary>The group members as of the last line read: detected from the log (group
+    /// joins/invites/tells, party-XP kills) or joined from the hand-added list. Exposed
+    /// read-only so Options → Behavior can show who is counted now — never itself the
+    /// roster; see <see cref="Roster"/> for exclusions.</summary>
     public IReadOnlyCollection<string> AutoDetected => _autoDetected;
 
     /// <summary>Moves whenever the auto-detected set or the known-NPC set changes, so a
@@ -125,6 +144,14 @@ public sealed class TeammateRoster
     /// "the primary left/disbanded", and the roster was never cleared — a real,
     /// observed log line (finding: 2026-08-29 `You remove Smargush from the
     /// party.`), not a hypothetical.</summary>
+    public void Observe(DateTime ts, string msg, string? primaryName)
+    {
+        JoinHandAddedThrough(ts);
+        Observe(msg, primaryName);
+    }
+
+    /// <summary><see cref="Observe(DateTime, string, string?)"/> without a timestamp: no
+    /// hand-added join is placed. For callers that feed group lines alone.</summary>
     public void Observe(string msg, string? primaryName)
     {
         if (string.IsNullOrEmpty(msg)) return;
@@ -221,21 +248,16 @@ public sealed class TeammateRoster
         Version++;
     }
 
-    /// <summary>The whitelist: auto-detected names, unioned with the caller's manual
-    /// list, minus <paramref name="primaryName"/>, <paramref name="primaryPetName"/>
+    /// <summary>The whitelist: the current members (<see cref="AutoDetected"/>, hand-added
+    /// joins included), minus <paramref name="primaryName"/>, <paramref name="primaryPetName"/>
     /// (refuse a roster name equal to the user's OWN current pet — design survey §B
     /// "the user's own SK pet keeps its existing path"), and any name ever seen as an
-    /// NPC target this session. A manually-typed name is refused the same as an
+    /// NPC target this session. A hand-added name is refused the same as an
     /// auto-detected one — the exclusion list protects the player from a typo or a
     /// stale name exactly as much as it protects the auto-detector.</summary>
-    public IReadOnlyCollection<string> Roster(string? primaryName, string? primaryPetName,
-        IReadOnlyCollection<string>? manualNames)
+    public IReadOnlyCollection<string> Roster(string? primaryName, string? primaryPetName)
     {
         var roster = new HashSet<string>(_autoDetected, StringComparer.OrdinalIgnoreCase);
-        if (manualNames is not null)
-            foreach (var n in manualNames)
-                if (!string.IsNullOrWhiteSpace(n)) roster.Add(Canonicalize(n.Trim()));
-
         if (primaryName is { Length: > 0 }) roster.Remove(primaryName);
         if (primaryPetName is { Length: > 0 }) roster.Remove(primaryPetName);
         roster.ExceptWith(_everNpc);
@@ -251,7 +273,45 @@ public sealed class TeammateRoster
         _partyXpKills.Clear();
         _partyXpLinesLeft = 0;
         _beforeLogin = [];
+        _handAddedPassed = 0;
+        LastLine = null;
         Version++;
+    }
+
+    /// <summary>Sets the hand-added joins for the watched character (<see cref="ManualTeammate"/>).
+    /// Each joins the group just before the first line stamped at or after its moment —
+    /// once — and is then a member like any other. Joins at or before
+    /// <paramref name="pastThrough"/> are behind the reader already and are not placed
+    /// again: a live edit leaves them to the re-derivation that follows it, which reads
+    /// the log from the start and places every join in order.</summary>
+    internal void ArmHandAdded(IEnumerable<(string Name, DateTime Since)> joins, DateTime? pastThrough)
+    {
+        _handAdded = [.. joins
+            .Where(j => !string.IsNullOrWhiteSpace(j.Name))
+            .Select(j => (Canonicalize(j.Name.Trim()), j.Since))
+            .OrderBy(j => j.Item2)];
+        _handAddedPassed = pastThrough is { } p ? _handAdded.Count(j => j.Since <= p) : 0;
+        Version++;
+    }
+
+    /// <summary>A name the caller vouches for, in the group from this line on — the
+    /// standalone feed's list (<see cref="DerivedTeammates.Observe"/>).</summary>
+    internal void JoinByHand(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return;
+        if (_autoDetected.Add(Canonicalize(name.Trim()))) Version++;
+    }
+
+    // Places every armed hand-added join whose moment has come, before the line at ts.
+    private void JoinHandAddedThrough(DateTime ts)
+    {
+        while (_handAddedPassed < _handAdded.Length && _handAdded[_handAddedPassed].Since <= ts)
+        {
+            var (name, since) = _handAdded[_handAddedPassed++];
+            if (LastLine is null && since < ts) continue;   // older than the first line read: see LastLine
+            if (_autoDetected.Add(name)) Version++;
+        }
+        LastLine = ts;
     }
 
     /// <summary>A copy that keeps every known-NPC exclusion and knows only
@@ -259,15 +319,18 @@ public sealed class TeammateRoster
     /// after a Select; whoever was in the group when a "Reset session" split the log) — the
     /// starting point for re-deriving a session from that line, so membership is rebuilt
     /// in log order instead of whitelisting today's members retroactively.</summary>
-    internal TeammateRoster WithoutMembers(IEnumerable<string>? members = null)
+    internal TeammateRoster WithoutMembers(IEnumerable<string>? members = null,
+        IEnumerable<(string Name, DateTime Since)>? handAdded = null, DateTime? handAddedPastThrough = null)
     {
         var copy = new TeammateRoster();
         copy._everNpc.UnionWith(_everNpc);
         if (members is not null) copy._autoDetected.UnionWith(members);
+        copy.ArmHandAdded(handAdded ?? [], handAddedPastThrough);
+        copy.LastLine = handAddedPastThrough;
         return copy;
     }
 
-    /// <summary>A hand-typed roster entry ("garg", "GARG") is canonicalised to the
+    /// <summary>A hand-added name ("garg", "GARG") is canonicalised to the
     /// shape an EQ character name actually has (one capitalised word, e.g. "Garg")
     /// before it enters the roster set. Without this, <see cref="TeammatePerspective"/>'s
     /// exact-word matcher — deliberately <c>Ordinal</c>, so "Garg" can never match

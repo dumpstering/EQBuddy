@@ -59,7 +59,7 @@ public partial class OwnLogTeammatesEndToEndTests : IDisposable
     {
         File.WriteAllLines(_path, _lines.Take(initialLines));
         var watcher = new LogWatcher(stats) { DeferIngestForTests = true };
-        watcher.Teammates.ManualNames = Settings.TeammateNames;   // MainWindow's load line: empty by default
+        watcher.Teammates.Manual = Settings.ManualTeammates;   // MainWindow's load line: empty by default
         watcher.Select(_path);
         watcher.FinishInitialIngest(watcher.SelectGeneration);
         return watcher;
@@ -68,7 +68,7 @@ public partial class OwnLogTeammatesEndToEndTests : IDisposable
     [Fact]
     public void GargsDamageAndKillsReachTheDesktopAndThePhoneFromTheWatchedLogAlone()
     {
-        Assert.Empty(Settings.TeammateNames);
+        Assert.Empty(Settings.ManualTeammates);
         Assert.DoesNotContain(typeof(AppSettings).GetProperties(BindingFlags.Public | BindingFlags.Instance),
             p => p.Name.Contains("TeammateLog", StringComparison.OrdinalIgnoreCase));
 
@@ -204,7 +204,10 @@ public partial class OwnLogTeammatesEndToEndTests : IDisposable
         // added: the re-derivation must stop at the bytes the watcher has read, or the
         // next poll would feed those lines to Garg a second time.
         File.AppendAllLines(_path, unannounced.Skip(half));
-        watcher.Teammates.ManualNames = ["garg"];                  // typed in lower case
+        // What the Options row stores: typed in lower case, joining at the session start.
+        var since = watcher.Teammates.JoinTimeForHandAdded("garg", DateTime.Now);
+        Assert.Equal(stats.Snapshot().SessionStart, since);
+        watcher.Teammates.Manual = [new ManualTeammate("garg", "Smargush", "rivervale", since)];
         watcher.RederiveTeammatesAsync().Wait();
         var (sofar, _) = CountGarg(unannounced.Take(half));
         Assert.Equal(stats.Snapshot().DamageDealt + sofar, BuildSnapshot(stats).DamageDealt);

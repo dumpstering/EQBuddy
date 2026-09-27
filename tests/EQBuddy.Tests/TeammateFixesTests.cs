@@ -25,7 +25,7 @@ public class TeammateFixesTests
         derived.Observe(T.AddSeconds(2),
             "A necro acolyte has been slain by Sangsong!", Primary, null, null);
 
-        var roster = derived.Roster(Primary, null, null);
+        var roster = derived.Roster(Primary, null);
         Assert.DoesNotContain("Sangsong", roster);
 
         var combined = TeammateCombine.Combine(NewPrimary(), derived, null, null);
@@ -43,7 +43,7 @@ public class TeammateFixesTests
         derived.Observe(T.AddSeconds(1),
             "You notify Sangsong that you agree to join the group.", Primary, null, null);
 
-        Assert.Contains("Sangsong", derived.Roster(Primary, null, null));
+        Assert.Contains("Sangsong", derived.Roster(Primary, null));
     }
 
     // ---------------------------------------------------------------------
@@ -59,7 +59,7 @@ public class TeammateFixesTests
             "Ripto slashes a gnoll for 100 points of damage.", Primary, null, null);
         derived.Observe(T.AddSeconds(3), "A gnoll has been slain by Ripto!", Primary, null, null);
 
-        Assert.DoesNotContain("Ripto", derived.Roster(Primary, null, null));
+        Assert.DoesNotContain("Ripto", derived.Roster(Primary, null));
         var combined = TeammateCombine.Combine(NewPrimary(), derived, null, null);
         Assert.Equal(0, combined.YourKillCount);
     }
@@ -78,7 +78,7 @@ public class TeammateFixesTests
             "Ripto slashes a gnoll for 250 points of damage.", Primary, null, null);
         derived.Observe(T.AddSeconds(2), "Ripto has left the group.", Primary, null, null);
 
-        Assert.DoesNotContain("Ripto", derived.Roster(Primary, null, null));
+        Assert.DoesNotContain("Ripto", derived.Roster(Primary, null));
 
         var mates = derived.Snapshots();
         Assert.True(mates.ContainsKey("Ripto"));
@@ -105,7 +105,7 @@ public class TeammateFixesTests
         derived.Observe(T.AddSeconds(2),
             "Kellisanth slashes a rat for 500 points of damage.", Primary, null, null);
 
-        Assert.DoesNotContain("Kellisanth", derived.Roster(Primary, null, null));
+        Assert.DoesNotContain("Kellisanth", derived.Roster(Primary, null));
         var combined = TeammateCombine.Combine(NewPrimary(), derived, null, null);
         Assert.Equal(0, combined.DamageDealt);   // the post-disband hit is a bystander's, not "yours"
     }
@@ -121,7 +121,7 @@ public class TeammateFixesTests
         derived.Observe(T.AddSeconds(1), "Kellisanth has joined the group.", Primary, null, null);
         derived.Observe(T.AddSeconds(2), "You have been removed from the group.", Primary, null, null);
 
-        var roster = derived.Roster(Primary, null, null);
+        var roster = derived.Roster(Primary, null);
         Assert.DoesNotContain("Garg", roster);
         Assert.DoesNotContain("Kellisanth", roster);
     }

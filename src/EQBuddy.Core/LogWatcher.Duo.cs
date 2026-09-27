@@ -83,7 +83,7 @@ public sealed partial class LogWatcher
                         if (line.Length > 0 && line[^1] == '\r') line.Length--;
                         if (line.Length > 0 && LogParser.TrySplitLine(line.ToString(), out var ts, out var msg))
                         {
-                            if (ts < sessionStart) staging.ObserveRosterLine(msg);
+                            if (ts < sessionStart) staging.ObserveRosterLine(ts, msg);
                             else staging.ObservePrimaryLine(ts, msg, LogParser.Parse(ts, msg));
                         }
                         line.Clear();

@@ -35,7 +35,7 @@ public sealed class TeammateRosterLifecycleTests : IDisposable
         return duo;
     }
 
-    private IReadOnlyCollection<string> Roster(OwnLogDuo duo) => duo.Teammates.Roster(Primary, null, duo.Teammates.ManualNames);
+    private IReadOnlyCollection<string> Roster(OwnLogDuo duo) => duo.Teammates.Roster(Primary, null);
 
     // ---------------------------------------------------------------------
     // Finding 1: a groupmate from days ago stayed whitelisted.
@@ -62,12 +62,14 @@ public sealed class TeammateRosterLifecycleTests : IDisposable
         Assert.Equal(1, combined.PartyKillCount);
     }
 
+    /// <summary>Finding: a hand-added name was on the roster unconditionally, so a login
+    /// never ended it. It is a join now, and a login ends it like any member's.</summary>
     [Fact]
-    public void ALoginLeavesTheManualNamesAlone()
+    public void ALoginEndsAHandAddedNameToo()
     {
         var duo = Feed(new OwnLogDuo("Garg"), "Kellisanth has joined the group.", Login);
 
-        Assert.Contains("Garg", Roster(duo));
+        Assert.DoesNotContain("Garg", Roster(duo));
         Assert.DoesNotContain("Kellisanth", Roster(duo));
     }
 
@@ -120,7 +122,7 @@ public sealed class TeammateRosterLifecycleTests : IDisposable
         ]);
         Assert.Equal(15, stats.DuoSnapshot(null, null).DamageDealt);
 
-        watcher.Teammates.ManualNames = ["Yungweezy"];
+        watcher.Teammates.Manual = [new ManualTeammate("Yungweezy", Primary, "rivervale", T)];
         watcher.RederiveTeammates();
 
         Assert.Equal(15, stats.DuoSnapshot(null, null).DamageDealt);
@@ -219,7 +221,7 @@ public sealed class TeammateRosterLifecycleTests : IDisposable
         watcher.FinishInitialIngest(watcher.SelectGeneration);   // one more poll: the truncated file
         Assert.Equal(15, stats.DuoSnapshot(null, null).DamageDealt);
 
-        watcher.Teammates.ManualNames = ["Yungweezy"];
+        watcher.Teammates.Manual = [new ManualTeammate("Yungweezy", Primary, "rivervale", T)];
         watcher.RederiveTeammates();
 
         Assert.Equal(15, stats.DuoSnapshot(null, null).DamageDealt);

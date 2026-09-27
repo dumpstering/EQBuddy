@@ -69,7 +69,11 @@ public sealed class DerivedTeammates
     private readonly Dictionary<string, Corrections> _deaths = new(StringComparer.OrdinalIgnoreCase);
 
     private long _version;
-    private IReadOnlyCollection<string> _manualNames = [];
+    private ManualTeammate[] _manual = [];
+
+    /// <summary>The standalone feed's hand-added names that have joined already — each
+    /// joins once, at the first line it is passed with.</summary>
+    private readonly HashSet<string> _standaloneJoined = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Who was in the group at the first line of the file the watcher is reading:
     /// nobody after a Select, whoever was detected when the log was truncated under it (a
@@ -77,10 +81,15 @@ public sealed class DerivedTeammates
     /// archive). A re-derivation starts its roster here.</summary>
     private string[] _membersAtLogStart = [];
 
+    /// <summary>With <see cref="_membersAtLogStart"/>: the last line read before the log was
+    /// split. A hand-added join at or before it already shows in those members (or has
+    /// already been ended), so a re-derivation of the new file does not place it again.</summary>
+    private DateTime? _handAddedPastAtLogStart;
+
     // Roster cache: rebuilding the whitelist on every one of a long log's lines is the
     // hot path of the initial ingest, and the roster only moves on a handful of lines.
     private string[] _rosterCache = [];
-    private (int RosterVersion, string? Primary, string? Pet, IReadOnlyCollection<string>? Manual) _rosterKey = (-1, null, null, null);
+    private (int RosterVersion, string? Primary, string? Pet) _rosterKey = (-1, null, null);
 
     /// <summary>A standalone instance (tests, tools): the caller feeds it with
     /// <see cref="Observe"/> and resets it explicitly.</summary>
@@ -97,27 +106,53 @@ public sealed class DerivedTeammates
     /// <summary>A re-derivation's staging instance: fed from <paramref name="primary"/>'s
     /// log like the production one, but never subscribed to its rollover, and seen by
     /// nobody until <see cref="CommitReplay"/> moves its contents across.</summary>
-    private DerivedTeammates(SessionStats primary, TeammateRoster roster, IReadOnlyCollection<string> manualNames)
+    private DerivedTeammates(SessionStats primary, TeammateRoster roster, ManualTeammate[] manual)
     {
         _primary = primary;
         _roster = roster;
-        _manualNames = manualNames;
+        _manual = manual;
     }
 
-    /// <summary>The names the player added by hand in Options → Behavior
-    /// (<see cref="AppSettings.TeammateNames"/>). Copied on set, so a later edit of the
-    /// caller's list takes effect only when it is set again.</summary>
-    public IReadOnlyCollection<string> ManualNames
+    /// <summary>The teammates the player added by hand in Options → Behavior
+    /// (<see cref="AppSettings.ManualTeammates"/>), every character's. Only the watched
+    /// character's apply, and each only as a join at its own moment in the log
+    /// (<see cref="TeammateRoster.ArmHandAdded"/>) — never as a standing member. Copied on
+    /// set, so a later edit of the caller's list takes effect only when it is set again;
+    /// the caller then re-derives (<see cref="LogWatcher.RederiveTeammatesAsync"/>), which
+    /// places every join in log order.</summary>
+    public IReadOnlyList<ManualTeammate> Manual
     {
-        get => Volatile.Read(ref _manualNames);
-        set => Volatile.Write(ref _manualNames, value is null ? [] : value.ToArray());
+        get => Volatile.Read(ref _manual);
+        set
+        {
+            ManualTeammate[] all = value is null ? [] : [.. value.Where(m => m is not null)];
+            Volatile.Write(ref _manual, all);
+            var joins = JoinsForPrimary(all);   // reads the primary before taking _gate
+            lock (_gate) _roster.ArmHandAdded(joins, _roster.LastLine);
+        }
+    }
+
+    // The watched character's hand-added joins. Reads the primary's name and server, so
+    // never call it while holding _gate (the primary's lock is never taken under it).
+    private (string Name, DateTime Since)[] JoinsForPrimary(IReadOnlyList<ManualTeammate> all) =>
+        _primary is not { } p ? []
+            : [.. ManualTeammates.For(all, p.CharacterName, p.ServerName).Select(m => (m.Name, m.Since))];
+
+    /// <summary>When a name the player adds now joins — see <see cref="ManualTeammates.JoinTime"/>:
+    /// from the current session's start the first time, from <paramref name="now"/> when
+    /// it was added for this character before.</summary>
+    public DateTime JoinTimeForHandAdded(string name, DateTime now)
+    {
+        var addedBefore = _primary is { } p && ManualTeammates.NamesFor(Manual, p.CharacterName, p.ServerName)
+            .Contains(name, StringComparer.OrdinalIgnoreCase);
+        return ManualTeammates.JoinTime(addedBefore, _primary?.Snapshot().SessionStart, now);
     }
 
     /// <summary>Every teammate this primary session has applied an event for — a superset
     /// of the CURRENT roster: a name that left the group keeps what it already accrued.</summary>
     public IReadOnlyCollection<string> KnownTeammates { get { lock (_gate) return _stats.Keys.ToList(); } }
 
-    /// <summary>Names auto-detected from group lines so far — see
+    /// <summary>The group members as of the last line read, detected or hand-added — see
     /// <see cref="TeammateRoster.AutoDetected"/>.</summary>
     public IReadOnlyCollection<string> AutoDetected { get { lock (_gate) return _roster.AutoDetected.ToList(); } }
 
@@ -127,10 +162,18 @@ public sealed class DerivedTeammates
     public long Version { get { lock (_gate) return _stats.Count == 0 ? 0 : _version; } }
 
     /// <summary>The roster this instant — see <see cref="TeammateRoster.Roster"/>.</summary>
-    public IReadOnlyCollection<string> Roster(string? primaryName, string? primaryPetName,
-        IReadOnlyCollection<string>? manualNames)
+    public IReadOnlyCollection<string> Roster(string? primaryName, string? primaryPetName)
     {
-        lock (_gate) return _roster.Roster(primaryName, primaryPetName, manualNames);
+        lock (_gate) return _roster.Roster(primaryName, primaryPetName);
+    }
+
+    /// <summary>Who is counted right now: <see cref="Roster"/> for the watched character
+    /// and their pet — what Options → Behavior shows. Empty for a standalone instance.</summary>
+    public IReadOnlyCollection<string> CountedNow()
+    {
+        if (_primary is not { } p) return [];
+        var (name, pet) = (p.CharacterName, p.LivePetName);   // the primary's lock, not under _gate
+        return Roster(name, pet);
     }
 
     /// <summary>The production feed: one PRIMARY log line, after the primary applied
@@ -148,7 +191,7 @@ public sealed class DerivedTeammates
         try
         {
             var partyKill = primaryEvent is KillEvent k && k.Killer != "You" && !primary.IsMyPet(k.Killer);
-            ObserveCore(ts, msg, primaryEvent, partyKill, primary.CharacterName, primary.LivePetName, ManualNames);
+            ObserveCore(ts, msg, primaryEvent, partyKill, primary.CharacterName, primary.LivePetName);
         }
         catch (Exception ex)
         {
@@ -159,28 +202,36 @@ public sealed class DerivedTeammates
     private int _faultLogged;
 
     /// <summary>The standalone feed: parses <paramref name="msg"/> itself, the way the
-    /// primary would, and uses <paramref name="manualNames"/> as the manual list.</summary>
+    /// primary would. Each name in <paramref name="handAdded"/> joins the group at the first
+    /// line it is passed with, once — a join the caller vouches for, not a standing member:
+    /// a leave, removal, disband or login line ends it, and passing it again does not bring
+    /// it back.</summary>
     public void Observe(DateTime ts, string msg, string? primaryName, string? primaryPetName,
-        IReadOnlyCollection<string>? manualNames)
+        IReadOnlyCollection<string>? handAdded)
     {
         var evt = LogParser.Parse(ts, msg);
         var partyKill = evt is KillEvent k && k.Killer != "You"
             && !string.Equals(k.Killer, primaryPetName, StringComparison.OrdinalIgnoreCase);
-        ObserveCore(ts, msg, evt, partyKill, primaryName, primaryPetName, manualNames);
+        if (handAdded is not null)
+            lock (_gate)
+                foreach (var name in handAdded)
+                    if (!string.IsNullOrWhiteSpace(name) && _standaloneJoined.Add(name.Trim()))
+                        _roster.JoinByHand(name);
+        ObserveCore(ts, msg, evt, partyKill, primaryName, primaryPetName);
     }
 
     private void ObserveCore(DateTime ts, string msg, GameEvent? primaryEvent, bool primaryPartyKill,
-        string? primaryName, string? primaryPetName, IReadOnlyCollection<string>? manualNames)
+        string? primaryName, string? primaryPetName)
     {
         lock (_gate)
         {
-            _roster.Observe(msg, primaryName);
+            _roster.Observe(ts, msg, primaryName);
 
             // A player-shaped name's death, as the primary filed it — see _deaths.
             if (primaryPartyKill && primaryEvent is KillEvent death && LooksLikeAPlayer(death.Target))
                 Corrections.For(_deaths, death.Target).Add(death.Target, death.Killer);
 
-            var roster = RosterLocked(primaryName, primaryPetName, manualNames);
+            var roster = RosterLocked(primaryName, primaryPetName);
             var appliedTo = roster.Length == 0 || !ContainsAnyName(msg, roster)
                 ? null
                 : ApplyRewrittenLines(ts, msg, primaryName, roster, primaryPartyKill ? primaryEvent as KillEvent : null);
@@ -260,15 +311,14 @@ public sealed class DerivedTeammates
     }
 
     // Caller holds _gate.
-    private string[] RosterLocked(string? primaryName, string? primaryPetName, IReadOnlyCollection<string>? manualNames)
+    private string[] RosterLocked(string? primaryName, string? primaryPetName)
     {
-        var key = (_roster.Version, primaryName, primaryPetName, manualNames);
+        var key = (_roster.Version, primaryName, primaryPetName);
         if (_rosterKey.RosterVersion == key.Version
             && string.Equals(_rosterKey.Primary, primaryName, StringComparison.Ordinal)
-            && string.Equals(_rosterKey.Pet, primaryPetName, StringComparison.Ordinal)
-            && ReferenceEquals(_rosterKey.Manual, manualNames))
+            && string.Equals(_rosterKey.Pet, primaryPetName, StringComparison.Ordinal))
             return _rosterCache;
-        _rosterCache = [.. _roster.Roster(primaryName, primaryPetName, manualNames)];
+        _rosterCache = [.. _roster.Roster(primaryName, primaryPetName)];
         _rosterKey = key;
         return _rosterCache;
     }
@@ -376,14 +426,19 @@ public sealed class DerivedTeammates
     }
 
     /// <summary>A character switch or a re-selection of the log: everything above, plus
-    /// the auto-detected roster (the replay that follows re-detects it). Known-NPC
-    /// exclusions are kept — see <see cref="TeammateRoster.Reset"/>.</summary>
+    /// the roster (the replay that follows re-detects it, and places the NEW watched
+    /// character's hand-added joins in order). Known-NPC exclusions are kept — see
+    /// <see cref="TeammateRoster.Reset"/>.</summary>
     public void Reset()
     {
+        var joins = JoinsForPrimary(Manual);
         lock (_gate)
         {
             _roster.Reset();
+            _roster.ArmHandAdded(joins, null);
+            _standaloneJoined.Clear();
             _membersAtLogStart = [];
+            _handAddedPastAtLogStart = null;
             _stats.Clear();
             _lastApplied.Clear();
             _promoted.Clear();
@@ -394,7 +449,7 @@ public sealed class DerivedTeammates
     }
 
     /// <summary>Starts a re-derivation of the current session: a staging instance with
-    /// the manual names as they are now and a roster that knows only the members at the
+    /// the hand-added joins as they are now and a roster that knows only the members at the
     /// start of the file (none, unless the log was split under the watcher — see
     /// <see cref="LogRestarted"/>; the known-NPC exclusions are kept, as every reset keeps them), plus the generation it
     /// must still match to be committed. The caller feeds the staging instance every line
@@ -405,8 +460,11 @@ public sealed class DerivedTeammates
     {
         var primary = _primary ?? throw new InvalidOperationException(
             "BeginReplay needs the primary-owned instance (SessionStats.Teammates).");
+        var manual = Manual as ManualTeammate[] ?? [.. Manual];
+        var joins = JoinsForPrimary(manual);
         lock (_gate)
-            return (new DerivedTeammates(primary, _roster.WithoutMembers(_membersAtLogStart), ManualNames), _generation);
+            return (new DerivedTeammates(primary,
+                _roster.WithoutMembers(_membersAtLogStart, joins, _handAddedPastAtLogStart), manual), _generation);
     }
 
     /// <summary>The watched file was truncated and is being read again from its first byte:
@@ -414,15 +472,20 @@ public sealed class DerivedTeammates
     /// it starts with them rather than with nobody.</summary>
     internal void LogRestarted()
     {
-        lock (_gate) _membersAtLogStart = [.. _roster.AutoDetected];
+        lock (_gate)
+        {
+            _membersAtLogStart = [.. _roster.AutoDetected];
+            _handAddedPastAtLogStart = _roster.LastLine;
+        }
     }
 
-    /// <summary>A line from before the current session: only its group lines matter —
-    /// whatever it credited was cleared when the session rolled.</summary>
-    internal void ObserveRosterLine(string msg)
+    /// <summary>A line from before the current session: only its group lines (and the
+    /// hand-added joins due by its time) matter — whatever it credited was cleared when
+    /// the session rolled.</summary>
+    internal void ObserveRosterLine(DateTime ts, string msg)
     {
         var primaryName = _primary?.CharacterName;
-        lock (_gate) _roster.Observe(msg, primaryName);
+        lock (_gate) _roster.Observe(ts, msg, primaryName);
     }
 
     /// <summary>Replaces this instance's teammates, corrections and roster with what
@@ -437,7 +500,7 @@ public sealed class DerivedTeammates
             lock (staging._gate)
             {
                 _roster = staging._roster;
-                _rosterKey = (-1, null, null, null);
+                _rosterKey = (-1, null, null);
                 Replace(_stats, staging._stats);
                 Replace(_lastApplied, staging._lastApplied);
                 Replace(_promoted, staging._promoted);

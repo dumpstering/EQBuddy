@@ -448,10 +448,16 @@ The fork derives them:
   the player accepts, group chat) and from `PartyKillsToJoin` (3) kills landed right after
   "You gain party experience"; removed on leave/removal/disband and at the next login
   ("Welcome to EverQuest…" — camping leaves the group; a relog the group survived gets its
-  members back at that login's first party XP); merged with the names the player adds in
-  Options → Behavior → Teammates (`AppSettings.TeammateNames`), minus the player, their pet
-  and any name the log ever labelled `Targeted (NPC)` or that "told you" something (only
-  NPCs and pets do).
+  members back at that login's first party XP); minus the player, their pet and any name
+  the log ever labelled `Targeted (NPC)` or that "told you" something (only NPCs and pets
+  do). A name the player adds in Options → Behavior → Teammates
+  (`AppSettings.ManualTeammates`, `ManualTeammate`) is a JOIN, not a standing member: kept
+  for one character on one server, placed in log order at the start of the session it was
+  added in (`TeammateRoster.ArmHandAdded`), and ended by the same leave, removal, disband
+  and login lines as a detected member. Adding it again after the log ended it joins it
+  from that moment. A join older than the first line read is not placed. (It used to be
+  unioned into the roster unconditionally from one global list, so it outlived its
+  evening and crossed characters.)
 - **What they did** — `TeammatePerspective.Rewrite` turns each line naming a roster member
   into that member's first person ("You slash a gnoll…", "You have slain a gnoll!",
   "a gnoll hits YOU…") and the UNCHANGED `LogParser` parses it. `LogParser.cs` has zero
@@ -468,7 +474,7 @@ The fork derives them:
   `TeammatesLogRestarted()` records the members at that point for a later re-derivation.
   That is the entire `LogWatcher.cs` diff: `partial` and three lines. A fault while deriving
   a teammate is logged once and never abandons the poll chunk.
-- **Manual names mid-session** — `LogWatcher.RederiveTeammatesAsync` (`LogWatcher.Duo.cs`)
+- **Hand-added names mid-session** — `LogWatcher.RederiveTeammatesAsync` (`LogWatcher.Duo.cs`)
   re-derives the current session from the bytes the watcher has already read, so a name
   added in Options counts from the session's start and no line is fed twice. It replays
   from where the Select started (or from byte 0 of a split log, with the members at the

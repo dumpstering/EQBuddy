@@ -6,12 +6,12 @@ namespace EQBuddy.Core;
 public sealed class AppSettings
 {
     public string? LogFolder { get; set; }
-    /// <summary>Teammates the player added by hand in Options → Behavior, merged with
-    /// the names auto-detected from group lines in their OWN log by
-    /// <see cref="TeammateRoster.Roster"/> — never itself the whole roster. A name here
-    /// that the log later labels an NPC (<c>Targeted (NPC): &lt;name&gt;</c>) is still
-    /// excluded at read time, so a stale entry cannot outrank that safety check.</summary>
-    public List<string> TeammateNames { get; set; } = [];
+    /// <summary>Teammates the player added by hand in Options → Behavior, each for ONE
+    /// character on ONE server and each a join at a moment in that character's log
+    /// (<see cref="ManualTeammate"/>) — never a standing member: the log's own leave,
+    /// removal, disband and login lines end it like any detected member's
+    /// (<see cref="TeammateRoster"/>). An NPC-labelled name is still refused.</summary>
+    public List<ManualTeammate> ManualTeammates { get; set; } = [];
     /// <summary>Folder holding EQBuddySetup.exe for updates; null = auto-detect OneDrive.</summary>
     public string? UpdateFolder { get; set; }
     /// <summary>This copy has been told that EQBuddy v2 is Windows-only and that it is

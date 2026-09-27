@@ -457,3 +457,28 @@ default it could have gone the other way on:
    `MainWindow.xaml.cs` keeps six in-place lines at 4,222.
 
 - Claude Code (fork session)
+
+## 2026-09-26 - Own-log teammates: a hand-added name is a join, kept per character
+
+1. **A name added by hand in Options -> Behavior -> Teammates is a JOIN, not a standing
+   member.** It used to be unioned into the roster unconditionally from one global
+   `TeammateNames` list, so a name added for one evening stayed whitelisted on every later
+   day and every other character: any line naming that player — a bystander's hits, kills
+   and heals — reached the combined totals and the phone, and the Options text ("logging
+   out ends it") was false for those names. Now each entry (`ManualTeammate`) joins at the
+   start of the session it was added in and is ended by the same leave, removal, disband
+   and login lines as a detected member. Other way: keep the standing member and add an
+   expiry — rejected, an expiry is a guess the log already answers.
+2. **Kept per character and server** (`AppSettings.ManualTeammates`), keyed like
+   `CharacterLog`. Other way: one global list — the finding's cross-character leak.
+3. **Adding a name again after the log ended it joins it from that moment**, beside the
+   first join, so the stint the log already ended keeps what it counted and the gap is
+   not credited. Only a name counted right now is refused as a duplicate.
+4. **A join older than the first line read is not placed** (a split log, review mode):
+   whether the group still held is not known, and the roster is a whitelist.
+5. **The old `TeammateNames` key is left behind, not migrated**: it names no character
+   and no moment, so any migration would be a guess — exactly the wrong a whitelist
+   exists to avoid. The fork never released a build carrying it; re-adding a name is one
+   click.
+
+- Claude Code (fork session)

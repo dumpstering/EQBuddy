@@ -55,7 +55,7 @@ public sealed class TeammateRederiveTests : IDisposable
         Assert.Equal(0, live.YourKillCount);
         Assert.Equal(1, live.PartyKillCount);
 
-        watcher.Teammates.ManualNames = ["Yungweezy"];   // any edit in Options re-derives
+        watcher.Teammates.Manual = [new ManualTeammate("Yungweezy", "Smargush", "rivervale", T)];   // any edit in Options re-derives
         watcher.RederiveTeammates();
 
         var after = stats.DuoSnapshot(null, null);
@@ -82,7 +82,7 @@ public sealed class TeammateRederiveTests : IDisposable
         ]);
         Assert.Equal(7, stats.DuoSnapshot(null, null).DamageDealt);
 
-        watcher.Teammates.ManualNames = ["Yungweezy"];
+        watcher.Teammates.Manual = [new ManualTeammate("Yungweezy", "Smargush", "rivervale", T)];
         watcher.RederiveTeammates();
 
         Assert.Equal(7, stats.DuoSnapshot(null, null).DamageDealt);
@@ -100,7 +100,7 @@ public sealed class TeammateRederiveTests : IDisposable
         using var watcher = Watch(stats, [.. earlier, .. reviewed], startOffset);
         Assert.Equal(10, stats.DuoSnapshot(null, null).DamageDealt);
 
-        watcher.Teammates.ManualNames = ["Yungweezy"];
+        watcher.Teammates.Manual = [new ManualTeammate("Yungweezy", "Smargush", "rivervale", T)];
         watcher.RederiveTeammates();
 
         Assert.Equal(10, stats.DuoSnapshot(null, null).DamageDealt);
@@ -118,7 +118,7 @@ public sealed class TeammateRederiveTests : IDisposable
         Assert.Equal(17, before.DamageDealt);
 
         File.Delete(_path);
-        watcher.Teammates.ManualNames = ["Yungweezy"];
+        watcher.Teammates.Manual = [new ManualTeammate("Yungweezy", "Smargush", "rivervale", T)];
         watcher.RederiveTeammates();
 
         Assert.Equal(before.DamageDealt, stats.DuoSnapshot(null, null).DamageDealt);
@@ -137,7 +137,7 @@ public sealed class TeammateRederiveTests : IDisposable
         var versionBefore = duo.Teammates.Version;
 
         var (staging, generation) = duo.Teammates.BeginReplay();
-        staging.ObserveRosterLine("Garg has joined the group.");
+        staging.ObserveRosterLine(T, "Garg has joined the group.");
         staging.ObservePrimaryLine(T.AddSeconds(1), "Garg slashes a gnoll for 9 points of damage.", null);
         Assert.Equal(5, duo.Combined().DamageDealt);
         Assert.Equal(versionBefore, duo.Teammates.Version);
@@ -148,7 +148,7 @@ public sealed class TeammateRederiveTests : IDisposable
 
         var (late, lateGeneration) = duo.Teammates.BeginReplay();
         duo.Teammates.ResetSession();                            // "Reset session" meanwhile
-        late.ObserveRosterLine("Garg has joined the group.");
+        late.ObserveRosterLine(T, "Garg has joined the group.");
         late.ObservePrimaryLine(T.AddSeconds(1), "Garg slashes a gnoll for 1000 points of damage.", null);
         Assert.False(duo.Teammates.CommitReplay(late, lateGeneration));
         Assert.Empty(duo.Teammates.KnownTeammates);

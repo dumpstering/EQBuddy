@@ -11,9 +11,12 @@ namespace EQBuddy;
 /// **Options → Behavior → Teammates.** Teammates are worked out from the player's OWN log —
 /// there is no file to pick — so this row has two jobs: show, live, who the log has put in
 /// the group, and let the player add or remove names by hand for someone the log never
-/// announced (<see cref="AppSettings.TeammateNames"/>). A change re-derives the current
-/// session through <see cref="LogWatcher.RederiveTeammatesAsync"/>, so a name added
-/// mid-session counts from the session's start.
+/// announced (<see cref="AppSettings.ManualTeammates"/>). A hand-added name is kept for the
+/// watched character only, and is a JOIN, not a standing member: it counts from the start
+/// of the session it was added in until the log shows them leave, the group end or a log
+/// out (<see cref="ManualTeammate"/>). A change re-derives the current session through
+/// <see cref="LogWatcher.RederiveTeammatesAsync"/>, so a name added mid-session counts
+/// from the session's start.
 ///
 /// Its own class, like <see cref="SettingsTelemetryView"/>, so the upstream Behavior block
 /// gains one line; each <see cref="SettingsBehaviorView"/> builds its own instance (trap 45),
@@ -25,13 +28,13 @@ internal sealed class SettingsTeammatesView
 {
     /// <summary>What the feature does and does not see, and the one setting it depends on.</summary>
     private const string TeammatesBlurb =
-        "Your teammates come from your own log: a group join, an accepted invite, group chat "
-        + "or three of their kills that earn you party XP adds them; logging out ends it. What "
-        + "your log shows of them (damage, kills, heals, damage taken) joins your totals here "
-        + "and on your phone. No file from them is needed. Their XP, loot and coin never "
-        + "appear in your log, so those stay yours. Keep the chat filters for other players' "
-        + "hits and misses on, or their fighting never reaches your log. Add a name for "
-        + "someone grouped before your log began.";
+        "Your teammates come from your own log, with no file from them: a group join, an "
+        + "accepted invite, group chat or three of their kills that earn you party XP adds "
+        + "them; leaving, a disband or logging out ends it. Their damage, kills, heals and "
+        + "damage taken join your totals, here and on your phone; their XP, loot and coin "
+        + "stay yours. Keep the chat filters for other players' hits and misses on. A name "
+        + "you add counts for this character from this session's start until your log "
+        + "shows them leave, the group end or you log out.";
 
     private readonly MainWindow _main;
     private readonly Func<object, object> _resource;
@@ -40,6 +43,7 @@ internal sealed class SettingsTeammatesView
     private TextBox _input = null!;
     private TextBlock _refusal = null!;
     private DispatcherTimer? _repaint;
+    private string _rowsDrawn = "";
 
     public SettingsTeammatesView(MainWindow main, Func<object, object> resource)
     {
@@ -88,12 +92,12 @@ internal sealed class SettingsTeammatesView
 
         BuildNameRows();
         PaintDetected();
-        // Live while on screen: a join line the log writes now shows up here without the
-        // player reopening Options.
+        // Live while on screen: a join or leave line the log writes now shows up here
+        // without the player reopening Options.
         panel.Loaded += (_, _) =>
         {
             _repaint ??= new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background,
-                (_, _) => PaintDetected(), panel.Dispatcher);
+                (_, _) => { PaintDetected(); BuildNameRows(); }, panel.Dispatcher);
             _repaint.Start();
             PaintDetected();
         };
@@ -102,30 +106,49 @@ internal sealed class SettingsTeammatesView
     }
 
     private void PaintDetected() =>
-        _detected.Text = TeammatesPresentation.DetectedLine(_main._watcher.Teammates.AutoDetected);
+        _detected.Text = TeammatesPresentation.DetectedLine(_main._watcher.Teammates.CountedNow());
 
+    /// <summary>The watched character's log, whose hand-added names this row shows and edits.</summary>
+    private CharacterLog? Watched => _main._watcher.CurrentPath is { } p ? CharacterLog.FromPath(p) : null;
+
+    /// <summary>Rebuilt only when a name or whether it is counted moved, so the 2 s repaint
+    /// never pulls a ✕ out from under the pointer for nothing.</summary>
     private void BuildNameRows()
     {
+        // A hand-edited settings.json can carry "ManualTeammates": null.
+        var who = Watched;
+        var saved = ManualTeammates.NamesFor(_main.Settings.ManualTeammates ??= [], who?.Character, who?.Server);
+        var counted = _main._watcher.Teammates.CountedNow();
+        var rows = saved.Select(n => (Name: n, Counted: counted.Contains(n, StringComparer.OrdinalIgnoreCase))).ToList();
+        var drawn = string.Join("|", rows.Select(r => $"{r.Name}:{r.Counted}"));
+        if (_names.Children.Count > 0 && drawn == _rowsDrawn) return;
+        _rowsDrawn = drawn;
+
         _names.Children.Clear();
-        // A hand-edited settings.json can carry "TeammateNames": null.
-        var saved = _main.Settings.TeammateNames ??= [];
-        _names.Children.Add(Dim(TeammatesPresentation.ManualHeading(saved.Count)));
-        foreach (var name in saved.ToList())
+        _names.Children.Add(Dim(TeammatesPresentation.ManualHeading(rows.Count)));
+        foreach (var (name, isCounted) in rows)
         {
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 2, 0, 0) };
-            var label = new TextBlock { Text = name, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+            var row = new Grid { Margin = new Thickness(12, 2, 0, 0) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var label = new TextBlock
+            {
+                Text = TeammatesPresentation.ManualRow(name, isCounted), FontSize = 12,
+                TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center,
+            };
             label.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
             row.Children.Add(label);
             var remove = new Button
             {
                 Style = (Style)_resource("IconButton"), Content = "✕", FontSize = 11,
-                Margin = new Thickness(6, 0, 0, 0), ToolTip = $"Stop counting {name}",
+                Margin = new Thickness(6, 0, 0, 0), ToolTip = $"Take {name} off the names you added",
             };
             remove.Click += (_, _) =>
             {
-                _main.Settings.TeammateNames.RemoveAll(n => n.Equals(name, StringComparison.OrdinalIgnoreCase));
+                ManualTeammates.Remove(_main.Settings.ManualTeammates ??= [], name, who?.Character, who?.Server);
                 Apply();
             };
+            Grid.SetColumn(remove, 1);
             row.Children.Add(remove);
             _names.Children.Add(row);
         }
@@ -133,17 +156,20 @@ internal sealed class SettingsTeammatesView
 
     private void Add()
     {
-        if (!TeammatesPresentation.TryNormalizeName(_input.Text, _main._watcher.CurrentPath is { } p
-                ? CharacterLog.FromPath(p)?.Character : null,
-                _main.Settings.TeammateNames ?? [], out var name, out var refusal))
+        var who = Watched;
+        string? refusal;
+        if (who is null) refusal = TeammatesPresentation.NoLogRefusal;
+        else if (TeammatesPresentation.TryNormalizeName(_input.Text, who.Character,
+                     _main._watcher.Teammates.CountedNow(), out var name, out refusal))
         {
-            _refusal.Text = refusal ?? "";
-            _refusal.Visibility = Visibility.Visible;
+            var since = _main._watcher.Teammates.JoinTimeForHandAdded(name, DateTime.Now);
+            (_main.Settings.ManualTeammates ??= []).Add(new ManualTeammate(name, who.Character, who.Server, since));
+            _input.Text = "";
+            Apply();
             return;
         }
-        (_main.Settings.TeammateNames ??= []).Add(name);
-        _input.Text = "";
-        Apply();
+        _refusal.Text = refusal ?? "";
+        _refusal.Visibility = Visibility.Visible;
     }
 
     /// <summary>Save, hand the new list to the watcher, and re-derive the current session
@@ -152,8 +178,9 @@ internal sealed class SettingsTeammatesView
     {
         _refusal.Visibility = Visibility.Collapsed;
         _main.Settings.Save();
-        _main._watcher.Teammates.ManualNames = _main.Settings.TeammateNames;
+        _main._watcher.Teammates.Manual = _main.Settings.ManualTeammates;
         _ = _main._watcher.RederiveTeammatesAsync();
+        _rowsDrawn = "\0";   // the list changed: redraw now
         BuildNameRows();
     }
 

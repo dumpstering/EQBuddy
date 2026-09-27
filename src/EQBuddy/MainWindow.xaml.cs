@@ -381,7 +381,7 @@ public partial class MainWindow : Window, ICardContext, IZoneHost
 
         if (_settings.LogFolder is { } saved && !System.IO.Directory.Exists(saved))
             _settings.LogFolder = null; // stale saved path (game moved) — re-detect
-        _settings.LogFolder ??= LogWatcher.FindDefaultLogFolder(); _watcher.Teammates.ManualNames = _settings.TeammateNames;
+        _settings.LogFolder ??= LogWatcher.FindDefaultLogFolder(); _watcher.Teammates.Manual = _settings.ManualTeammates;
         // A saved spot on a monitor that's gone (undocked, TV unplugged) would put the
         // widget in the void — and settings.json survives reinstalls, so it stays there.
         _restoredSavedPosition = ScreenGuard.OnScreen(_settings.WindowLeft, _settings.WindowTop, Width, Height);

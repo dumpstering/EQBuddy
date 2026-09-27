@@ -133,8 +133,8 @@ public class DerivedTeammatesDoubleCountTests
     }
 
     // ---------------------------------------------------------------------
-    // Roster detection: auto-detect from a join line, merged with the manual list,
-    // excluding the primary, the primary's pet, and any name ever seen as an NPC.
+    // Roster detection: auto-detect from a join line, plus the names the caller adds by
+    // hand, excluding the primary, the primary's pet, and any name ever seen as an NPC.
     // ---------------------------------------------------------------------
     [Fact]
     public void RosterAutoDetectsGroupJoinsAndExcludesKnownNames()
@@ -142,10 +142,10 @@ public class DerivedTeammatesDoubleCountTests
         var derived = new DerivedTeammates();
         var t = new DateTime(2026, 1, 1, 12, 0, 0);
 
-        derived.Observe(t, "Garg has joined the group.", Primary, null, null);
+        derived.Observe(t, "Garg has joined the group.", Primary, null, ["Radiant", "Smargush", "Jarartik"]);
         derived.Observe(t, "Targeted (NPC): Radiant", Primary, null, null);
 
-        var roster = derived.Roster(Primary, "Jarartik", ["Radiant", "Smargush"]);
+        var roster = derived.Roster(Primary, "Jarartik");
 
         Assert.Contains("Garg", roster);
         Assert.DoesNotContain("Radiant", roster);      // learned NPC, even though also typed manually
