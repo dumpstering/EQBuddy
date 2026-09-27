@@ -33,7 +33,7 @@ public class DerivedTeammatesDoubleCountTests
         primary.Apply(LogParser.Parse(t, line)!);
         derived.Observe(t, line, Primary, null, Roster);
 
-        var mates = derived.Snapshots(Primary, null, Roster);
+        var mates = derived.Snapshots();
         Assert.True(mates.ContainsKey("Garg"));
         Assert.Equal(1, mates["Garg"].YourKillCount);
         // From the PRIMARY's own log, this is (before correction) a party kill of
@@ -41,7 +41,7 @@ public class DerivedTeammatesDoubleCountTests
         // via the same-line-exact subtraction, not just leave doubled.
         Assert.Equal(1, primary.Snapshot().PartyKillCount);
 
-        var combined = TeammateCombine.Combine(primary.Snapshot(), mates);
+        var combined = TeammateCombine.Combine(primary, derived, null, null);
 
         Assert.Equal(1, combined.YourKillCount);   // 0 (mine) + 1 (Garg) — not 2
         Assert.Equal(0, combined.PartyKillCount);  // the same kill, subtracted exactly
@@ -66,11 +66,11 @@ public class DerivedTeammatesDoubleCountTests
         Assert.Equal(104, primary.Snapshot().HealingDone);
         Assert.Equal(0, primary.Snapshot().HealingReceived);
 
-        var mates = derived.Snapshots(Primary, null, Roster);
+        var mates = derived.Snapshots();
         Assert.Equal(0, mates["Garg"].HealingDone);
         Assert.Equal(104, mates["Garg"].HealingReceived);
 
-        var combined = TeammateCombine.Combine(primary.Snapshot(), mates);
+        var combined = TeammateCombine.Combine(primary, derived, null, null);
 
         // The heal is 104 exactly ONCE in each of the two summed fields — 208 in
         // either would mean it landed twice somewhere.
@@ -91,7 +91,7 @@ public class DerivedTeammatesDoubleCountTests
         primary.Apply(LogParser.Parse(t.AddSeconds(1), "You slash a froglok for 50 points of damage.")!);
 
         var snap = primary.Snapshot();
-        var combined = TeammateCombine.Combine(snap, new Dictionary<string, StatsSnapshot>());
+        var combined = TeammateCombine.Combine(primary, new DerivedTeammates(), null, null);
 
         Assert.Same(snap, combined);   // no roster, no fold — the identical reference
     }
@@ -116,30 +116,20 @@ public class DerivedTeammatesDoubleCountTests
         Assert.Contains(primary.Snapshot().PartyKillsByTarget, nc => nc.Name.Equals("Garg", StringComparison.OrdinalIgnoreCase));
 
         derived.Observe(t, line, Primary, null, Roster);
-        var mates = derived.Snapshots(Primary, null, Roster);
+        var mates = derived.Snapshots();
         // Garg's OWN perspective of this line is a death, not a kill of anything —
         // it never reaches Garg.YourKills at all.
         Assert.Empty(mates["Garg"].YourKills);
         Assert.Single(mates["Garg"].Deaths);
 
-        var combined = TeammateCombine.Combine(primary.Snapshot(), mates);
+        var combined = TeammateCombine.Combine(primary, derived, null, null);
 
         Assert.Equal(0, combined.PartyKillCount);
         Assert.DoesNotContain(combined.PartyKillsByTarget, nc => nc.Name.Equals("Garg", StringComparison.OrdinalIgnoreCase));
-        // Without the optional deathKillers argument, the killer row is left exactly
-        // as before (a stated, opt-in gap, not a silent one) — "a rock golem" still
-        // shows one kill it did not really make on a party member.
-        Assert.Contains(combined.PartyKillsByKiller, nc => nc.Name.Equals("a rock golem", StringComparison.OrdinalIgnoreCase));
-
-        // Passing the derived teammate's own death-by-killer counts corrects it (audit
-        // finding, major): the killer breakdown must sum back to PartyKillCount.
-        var deathKillers = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Garg"] = derived.DeathKillersFor("Garg"),
-        };
-        var corrected = TeammateCombine.Combine(primary.Snapshot(), mates, deathKillers);
-        Assert.DoesNotContain(corrected.PartyKillsByKiller, nc => nc.Name.Equals("a rock golem", StringComparison.OrdinalIgnoreCase));
-        Assert.Equal(corrected.PartyKillCount, corrected.PartyKillsByKiller.Sum(nc => nc.Count));
+        // The KILLER row that death put there goes too — "a rock golem" made no party
+        // kill — so the killer breakdown still sums to PartyKillCount.
+        Assert.DoesNotContain(combined.PartyKillsByKiller, nc => nc.Name.Equals("a rock golem", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(combined.PartyKillCount, combined.PartyKillsByKiller.Sum(nc => nc.Count));
     }
 
     // ---------------------------------------------------------------------
@@ -177,6 +167,6 @@ public class DerivedTeammatesDoubleCountTests
 
         derived.Observe(t, line, Primary, null, Roster);
 
-        Assert.Empty(derived.Snapshots(Primary, null, Roster));
+        Assert.Empty(derived.Snapshots());
     }
 }

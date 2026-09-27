@@ -58,7 +58,8 @@ public class DerivedTeammatesThreadSafetyTests
                 {
                     _ = derived.KnownTeammates.Count;
                     _ = derived.AutoDetected.Count;
-                    _ = derived.Snapshots(Primary, null, null).Count;
+                    _ = derived.Snapshots().Count;
+                    if (derived.Version < 0) throw new InvalidOperationException("version went negative");
                 }
             }
             catch (Exception ex) { caught ??= ex; cts.Cancel(); }

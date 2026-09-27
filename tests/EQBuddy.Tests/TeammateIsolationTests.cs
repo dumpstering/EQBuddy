@@ -88,7 +88,7 @@ public class TeammateIsolationTests
         derived.Observe(T0.AddSeconds(2), "A gnoll has been slain by Garg!", Primary, null, roster);
         derived.Observe(T0.AddSeconds(3), "Garg has been slain by a gnoll!", Primary, null, roster);
 
-        var garg = Assert.Single(derived.LiveStats(Primary, null, roster)).Value;
+        var garg = Assert.Single(derived.LiveStats()).Value;
         AssertNoDurableResourceAttached(garg);
     }
 

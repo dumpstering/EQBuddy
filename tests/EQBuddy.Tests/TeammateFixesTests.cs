@@ -28,7 +28,7 @@ public class TeammateFixesTests
         var roster = derived.Roster(Primary, null, null);
         Assert.DoesNotContain("Sangsong", roster);
 
-        var combined = TeammateCombine.Combine(NewPrimarySnapshot(), derived.Snapshots(Primary, null, null));
+        var combined = TeammateCombine.Combine(NewPrimary(), derived, null, null);
         Assert.Equal(0, combined.YourKillCount);   // the bystander's kill never became "yours"
     }
 
@@ -60,7 +60,7 @@ public class TeammateFixesTests
         derived.Observe(T.AddSeconds(3), "A gnoll has been slain by Ripto!", Primary, null, null);
 
         Assert.DoesNotContain("Ripto", derived.Roster(Primary, null, null));
-        var combined = TeammateCombine.Combine(NewPrimarySnapshot(), derived.Snapshots(Primary, null, null));
+        var combined = TeammateCombine.Combine(NewPrimary(), derived, null, null);
         Assert.Equal(0, combined.YourKillCount);
     }
 
@@ -80,11 +80,11 @@ public class TeammateFixesTests
 
         Assert.DoesNotContain("Ripto", derived.Roster(Primary, null, null));
 
-        var mates = derived.Snapshots(Primary, null, null);
+        var mates = derived.Snapshots();
         Assert.True(mates.ContainsKey("Ripto"));
         Assert.Equal(250, mates["Ripto"].DamageDealt);
 
-        var combined = TeammateCombine.Combine(NewPrimarySnapshot(), mates);
+        var combined = TeammateCombine.Combine(NewPrimary(), derived, null, null);
         Assert.Equal(250, combined.DamageDealt);   // not lost just because Ripto left
     }
 
@@ -106,7 +106,7 @@ public class TeammateFixesTests
             "Kellisanth slashes a rat for 500 points of damage.", Primary, null, null);
 
         Assert.DoesNotContain("Kellisanth", derived.Roster(Primary, null, null));
-        var combined = TeammateCombine.Combine(NewPrimarySnapshot(), derived.Snapshots(Primary, null, null));
+        var combined = TeammateCombine.Combine(NewPrimary(), derived, null, null);
         Assert.Equal(0, combined.DamageDealt);   // the post-disband hit is a bystander's, not "yours"
     }
 
@@ -136,7 +136,7 @@ public class TeammateFixesTests
         derived.Observe(T, "Garg slashes a froglok for 91 points of damage.",
             Primary, null, ["garg"]);
 
-        var mates = derived.Snapshots(Primary, null, ["garg"]);
+        var mates = derived.Snapshots();
         Assert.True(mates.ContainsKey("Garg"));
         Assert.Equal(91, mates["Garg"].DamageDealt);
     }
@@ -153,7 +153,7 @@ public class TeammateFixesTests
         derived.Observe(T, "A gnoll cleaves Sinista`s warder for 13 points of damage.",
             Primary, null, roster);
 
-        var mates = derived.Snapshots(Primary, null, roster);
+        var mates = derived.Snapshots();
         // Either nothing was created for Sinista, or if it was (via the session tick),
         // the object-form pet hit must not have raised DamageTaken.
         if (mates.TryGetValue("Sinista", out var snap))
@@ -173,7 +173,7 @@ public class TeammateFixesTests
         derived.Observe(T.AddSeconds(1), "Kellisanth slashes a gnoll for 10 points of damage.",
             Primary, null, roster);
 
-        var mates = derived.Snapshots(Primary, null, roster);
+        var mates = derived.Snapshots();
         Assert.Equal(0, mates["Kellisanth"].CastsStarted);
     }
 
@@ -190,7 +190,7 @@ public class TeammateFixesTests
 
         derived.Observe(T, line, Primary, null, roster);
 
-        var snap = derived.Snapshots(Primary, null, roster)["Kellisanth"];
+        var snap = derived.Snapshots()["Kellisanth"];
         Assert.Equal(147, snap.HealingDone);
         Assert.Equal(147, snap.HealingReceived);   // not 294
     }
@@ -208,7 +208,7 @@ public class TeammateFixesTests
 
         derived.Observe(T, line, Primary, null, roster);
 
-        var snap = derived.Snapshots(Primary, null, roster)["Kanaddar"];
+        var snap = derived.Snapshots()["Kanaddar"];
         Assert.Equal(0, snap.HealingReceived);
     }
 
@@ -238,7 +238,7 @@ public class TeammateFixesTests
         derived.Observe(T.AddMinutes(91), "Garg slashes a gnoll for 5 points of damage.",
             Primary, null, roster);
 
-        var snap = derived.Snapshots(Primary, null, roster)["Garg"];
+        var snap = derived.Snapshots()["Garg"];
         Assert.Equal(505, snap.DamageDealt);   // 500 + 5, not just 5
         Assert.Equal(1, snap.YourKillCount);
     }
@@ -270,7 +270,7 @@ public class TeammateFixesTests
 
         derived.Observe(T.AddMinutes(71), "Garg slashes a gnoll for 5 points of damage.", Primary, null, roster);
 
-        var snap = derived.Snapshots(Primary, null, roster)["Garg"];
+        var snap = derived.Snapshots()["Garg"];
         // A genuine 70-minute gap in real activity must roll Garg's session exactly
         // like the primary's own would — 5, not 505.
         Assert.Equal(5, snap.DamageDealt);
@@ -293,7 +293,7 @@ public class TeammateFixesTests
         // A real multi-hour gap, primary side included.
         derived.Observe(T.AddHours(3), "You slash a rat for 10 points of damage.", Primary, null, roster);
 
-        var mates = derived.Snapshots(Primary, null, roster);
+        var mates = derived.Snapshots();
         // Garg's own instance never received a fresh line naming him, so it holds no
         // snapshot for the new session (the old one has rolled off by the tick, and
         // nothing since has re-created it) — the stale 500/1 must not still be there.
@@ -319,7 +319,7 @@ public class TeammateFixesTests
         primary.Apply(LogParser.Parse(T, line)!);
         derived.Observe(T, line, Primary, null, roster);
 
-        var combined = TeammateCombine.Combine(primary.Snapshot(), derived.Snapshots(Primary, null, roster));
+        var combined = TeammateCombine.Combine(primary, derived, null, null);
 
         Assert.Equal(1, combined.YourKillCount);
         Assert.Equal(0, combined.PartyKillCount);
@@ -352,86 +352,18 @@ public class TeammateFixesTests
         derived.Observe(laterStart.AddSeconds(10), "Garg slashes a gnoll for 20 points of damage.",
             Primary, null, roster);
 
-        var liveTeammates = derived.LiveStats(Primary, null, roster);
-        var combined = TeammateCombine.Combine(primary, liveTeammates);
+        var combined = TeammateCombine.Combine(primary, derived, null, null);
 
         Assert.True(combined.CombatSeconds >= 19,
             $"expected the union of two disjoint ~10s spans (~20s), got {combined.CombatSeconds}");
     }
 
     // ---------------------------------------------------------------------
-    // DerivedTeammates: a death-killer count from a ROLLED-OVER teammate session
-    // must not survive into the fresh one (audit finding — was cleared only by
-    // Reset(), never by the teammate's own SessionGap rollover).
+    // TeammateCombine must apply the caller's recentWindow (and rules, primary-only) —
+    // the audit finding's "always null Recent, always empty Tracked" gap.
     // ---------------------------------------------------------------------
     [Fact]
-    public void DeathKillerCountsDoNotSurviveATeammateSessionRollover()
-    {
-        var derived = new DerivedTeammates();
-        var roster = new[] { "Garg" };
-
-        // Yesterday's session: Garg dies to a lizard defender.
-        derived.Observe(T, "Garg has been slain by a lizard defender!", Primary, null, roster);
-        Assert.Equal(1, derived.DeathKillersFor("Garg").GetValueOrDefault("a lizard defender"));
-
-        // A real multi-hour gap rolls GARG'S OWN isolated SessionStats over — this is
-        // independent of DerivedTeammates.Reset(), which only fires on a character
-        // switch. The rollover is detected by comparing SessionStartSnapshot BEFORE
-        // this line's own Apply() call, so it lags one line behind the roll itself —
-        // two lines after the gap is enough to observe it.
-        var next = T.AddHours(3);
-        derived.Observe(next, "Garg slashes a gnoll for 5 points of damage.", Primary, null, roster);
-        derived.Observe(next.AddSeconds(1), "Garg slashes a gnoll for 5 points of damage.", Primary, null, roster);
-
-        Assert.Empty(derived.DeathKillersFor("Garg"));
-    }
-
-    // ---------------------------------------------------------------------
-    // TeammateCombine + DerivedTeammates: a stale death-killer count that DID survive
-    // (the bug) would wrongly eat a genuine party kill of the same killer name in a
-    // later session — this is the finding's own worked example.
-    // ---------------------------------------------------------------------
-    [Fact]
-    public void StaleDeathKillerCountsFromAnEarlierSessionDoNotEatALaterPartyKill()
-    {
-        var primary = new SessionStats { CharacterName = Primary };
-        var derived = new DerivedTeammates();
-        var roster = new[] { "Garg" };
-
-        // Yesterday: Garg died to a lizard defender once.
-        derived.Observe(T, "Garg has been slain by a lizard defender!", Primary, null, roster);
-
-        // A real gap rolls Garg's own session over (see the test above for why two
-        // lines are needed to observe it).
-        var next = T.AddHours(3);
-        derived.Observe(next, "Garg slashes a gnoll for 5 points of damage.", Primary, null, roster);
-        derived.Observe(next.AddSeconds(1), "Garg slashes a gnoll for 5 points of damage.", Primary, null, roster);
-
-        // Today: a lizard defender genuinely kills a DIFFERENT groupmate (Ripto) —
-        // visible in the PRIMARY's own log as an ordinary third-party party kill,
-        // nothing to do with Garg's stale death from yesterday.
-        primary.Apply(LogParser.Parse(next.AddMinutes(1), "Ripto has been slain by a lizard defender!")!);
-
-        var deathKillers = new Dictionary<string, IReadOnlyDictionary<string, int>>
-        {
-            ["Garg"] = derived.DeathKillersFor("Garg"),
-        };
-        var combined = TeammateCombine.Combine(primary.Snapshot(), derived.Snapshots(Primary, null, roster), deathKillers);
-
-        // The bug would subtract yesterday's 1 death from today's genuine row and
-        // remove it outright (count - 1 <= 0). It must survive intact.
-        Assert.Contains(combined.PartyKillsByKiller, nc =>
-            nc.Name.Equals("a lizard defender", StringComparison.OrdinalIgnoreCase) && nc.Count == 1);
-    }
-
-    // ---------------------------------------------------------------------
-    // TeammateCombine: the live-instance overload must apply the SAME recentWindow
-    // (and rules, primary-only) every caller already gets from DuoCompanion's own
-    // single-companion path — the audit finding's "always null Recent, always empty
-    // Tracked" gap.
-    // ---------------------------------------------------------------------
-    [Fact]
-    public void TheLiveInstanceOverloadAppliesTheCallersRecentWindow()
+    public void TheCombineAppliesTheCallersRecentWindow()
     {
         var primary = new SessionStats { CharacterName = Primary };
         var derived = new DerivedTeammates();
@@ -441,8 +373,7 @@ public class TeammateFixesTests
         derived.Observe(T, "Garg slashes a gnoll for 200 points of damage.", Primary, null, roster);
         derived.Observe(T.AddSeconds(1), "A gnoll has been slain by Garg!", Primary, null, roster);
 
-        var liveTeammates = derived.LiveStats(Primary, null, roster);
-        var combined = TeammateCombine.Combine(primary, liveTeammates, recentWindow: TimeSpan.FromMinutes(5));
+        var combined = TeammateCombine.Combine(primary, derived, TimeSpan.FromMinutes(5), null);
 
         Assert.NotNull(combined.Recent);
     }
@@ -474,13 +405,12 @@ public class TeammateFixesTests
         derived.Observe(gargStart, "Garg slashes a froglok for 500 points of damage.", Primary, null, roster);
         derived.Observe(gargStart.AddSeconds(5), "Garg slashes a froglok for 500 points of damage.", Primary, null, roster);
 
-        var liveTeammates = derived.LiveStats(Primary, null, roster);
-        var combined = TeammateCombine.Combine(primary, liveTeammates, recentWindow: TimeSpan.FromMinutes(5));
+        var combined = TeammateCombine.Combine(primary, derived, TimeSpan.FromMinutes(5), null);
 
         Assert.NotNull(combined.Recent);
         Assert.True(combined.Recent!.Dps is > 150 and < 250,
             $"expected the union-recomputed rate near the true 200/s (old summed-rates bug reads ~400), got {combined.Recent.Dps}");
     }
 
-    private static StatsSnapshot NewPrimarySnapshot() => new SessionStats { CharacterName = Primary }.Snapshot();
+    private static SessionStats NewPrimary() => new() { CharacterName = Primary };
 }

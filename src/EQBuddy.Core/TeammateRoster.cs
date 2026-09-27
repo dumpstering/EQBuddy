@@ -66,6 +66,10 @@ public sealed class TeammateRoster
     /// never itself the roster; see <see cref="Roster"/> for exclusions.</summary>
     public IReadOnlyCollection<string> AutoDetected => _autoDetected;
 
+    /// <summary>Moves whenever the auto-detected set or the known-NPC set changes, so a
+    /// caller can cache <see cref="Roster"/> between the rare lines that move it.</summary>
+    internal int Version { get; private set; }
+
     /// <summary>Feed one already-split (timestamp stripped) log message. Cheap early-out:
     /// every pattern here anchors at the start of the line, so a single ordinal
     /// starts-with/contains check per pattern is enough before the regex runs.
@@ -105,6 +109,10 @@ public sealed class TeammateRoster
         }
         else if (UserRemovedRx.IsMatch(msg) || UserLeftOrDisbandedRx.IsMatch(msg)) _autoDetected.Clear();
         else if (msg[0] == 'T' && (m = TargetedNpcRx.Match(msg)).Success) _everNpc.Add(m.Groups["name"].Value);
+        else return;
+        // A matched line may still change nothing (a repeated join), but a membership
+        // swap of equal size would not move either count — so any matched line bumps.
+        Version++;
     }
 
     /// <summary>The whitelist: auto-detected names, unioned with the caller's manual
@@ -131,7 +139,11 @@ public sealed class TeammateRoster
     /// <summary>Clears auto-detection state on a character switch / re-Select — a fresh
     /// primary character starts with no assumed group. Deliberately does NOT clear
     /// <see cref="_everNpc"/>; see its own doc.</summary>
-    public void Reset() => _autoDetected.Clear();
+    public void Reset()
+    {
+        _autoDetected.Clear();
+        Version++;
+    }
 
     /// <summary>A hand-typed roster entry ("garg", "GARG") is canonicalised to the
     /// shape an EQ character name actually has (one capitalised word, e.g. "Garg")

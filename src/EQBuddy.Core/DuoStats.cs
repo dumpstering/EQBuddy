@@ -2,146 +2,105 @@ namespace EQBuddy.Core;
 
 /// <summary>
 /// The field-by-field rule for combining the watched character's own
-/// <see cref="StatsSnapshot"/> with their teammate's — the ONE place the duo redesign
-/// (plan Part 2) actually merges two sessions. Pure and static on purpose: no lock, no
-/// I/O, nothing session-scoped, so it costs nothing to call from a memo (see
-/// <c>DuoCompanion.cs</c>) and nothing to unit test with hand-built fixtures.
+/// <see cref="StatsSnapshot"/> with a teammate's — the ONE place two sessions become one
+/// number. Pure and static on purpose: no lock, no I/O, nothing session-scoped, so it is
+/// cheap to fold once per teammate (<see cref="TeammateCombine"/>) and simple to unit
+/// test with hand-built fixtures.
 ///
 /// <b>The non-duplication argument, in one place:</b> a teammate's kill reaches YOUR
-/// log as a third-party <c>KillEvent</c> (not <c>YourKills</c>) and their log as their
-/// own <c>YourKills</c> — so summing <see cref="StatsSnapshot.YourKillCount"/> is safe,
-/// but <see cref="StatsSnapshot.PartyKillCount"/> (which already counts party kills
-/// visible in YOUR OWN log, teammate's included) would DOUBLE if summed, so it stays
-/// yours alone. The identical shape holds for damage (their swings reach your log only
-/// as third-party events that never add to <c>DamageDealt</c>), heals (their heal on
-/// you is outgoing in THEIR log, incoming in yours — different buckets) and loot/money
-/// (every loot/coin regex in <c>LogParser.cs</c> is first-person; there is no
-/// third-party loot line to double-admit). XP is the one number where summing is
-/// simply meaningless: <see cref="XpEvent.Percent"/> is a percentage of THAT
-/// character's own level bar, so <see cref="StatsSnapshot.XpPercent"/> and everything
-/// derived from it (XpPerHour, HoursToLevel, AA) stays the watched character's own.
+/// log as a third-party <c>KillEvent</c> (a party kill, not <c>YourKills</c>) and
+/// reaches THEIR derived session as their own <c>YourKills</c> — so summing
+/// <see cref="StatsSnapshot.YourKillCount"/> is safe, but the party-kill rows must lose
+/// exactly those kills or the same kill shows twice. The identical shape holds for
+/// damage (their swings reach your stats only as third-party events that never add to
+/// <c>DamageDealt</c>) and heals (your heal on them is outgoing on your side and incoming
+/// on theirs — different buckets). XP is the one number where summing is simply
+/// meaningless: <see cref="XpEvent.Percent"/> is a percentage of THAT character's own
+/// level bar, so <see cref="StatsSnapshot.XpPercent"/> and everything derived from it
+/// (XpPerHour, HoursToLevel, AA) stays the watched character's own. A teammate derived
+/// from your log never has loot, coin or XP at all — your log never prints theirs.
 ///
-/// <b>Deliberately deferred (6a, per the coordinator's scope cut):</b> <see cref="StatsSnapshot.Mobs"/>
-/// ships as <c>mine</c> unmerged. Merging per-creature kill/loot rows correctly needs a
-/// mob-identity join (kills, loot, coin range, level range) while leaving percentage
-/// and per-character fields (<c>Xp</c>, <c>Factions</c>, <c>Considers</c>, <c>Zone</c>)
-/// alone — real work, scoped out of this pass. The gap: a mob a teammate solos never
-/// appears in the "Mob farming" rollup at all. Documented, not silently dropped.
+/// <b>Deliberately deferred:</b> <see cref="StatsSnapshot.Mobs"/> ships as <c>mine</c>
+/// unmerged. Merging per-creature rows correctly needs a mob-identity join while leaving
+/// per-character fields alone. The gap: a mob a teammate kills alone never appears in the
+/// "Mob farming" rollup. Documented, not silently dropped.
 ///
-/// <b>CombatSeconds (repair round B3, corrected from A6's initial "reported, not
-/// fixed" call):</b> <see cref="StatsSnapshot.CombatSeconds"/> is the real union of
-/// both sides' timestamped combat spans, computed by
-/// <see cref="DuoCompanion.UnionCombatSeconds"/> against the LIVE
-/// <see cref="SessionStats"/> instances and handed to <see cref="Combine"/> as
-/// <c>combatSecondsOverride</c> — this class never needed a StatsSnapshot property to
-/// reach that data, because <c>DuoCompanion.cs</c> is part of the SAME partial class
-/// as the private fields it reads (<c>_combatSpans</c>, <c>_closedCombatSeconds</c>,
-/// the still-open span), at zero cost to SessionStats.cs's own sync budget.
+/// <b>Time comes from the caller.</b> A <see cref="StatsSnapshot"/> carries no span
+/// history, so combat seconds, the recent-window rates and the live "current" DPS are
+/// computed by <see cref="TeammateCombine"/> as UNIONS over the live instances' spans
+/// and handed in; without them this falls back to <c>Math.Max</c> / a plain sum, which
+/// is right only for fixtures.
 /// </summary>
 public static class DuoStats
 {
     /// <summary>Mirrors the private <c>SessionStats.MaxRecentLoot</c> (250) — kept here
-    /// too because this class must stay outside the SessionStats*.cs ratchet glob (plan
-    /// Part 2a); duplicating the literal costs nothing, exposing the private constant
-    /// would cost a SessionStats.cs line this file cannot spend.</summary>
+    /// too because this class must stay outside the SessionStats*.cs ratchet glob;
+    /// duplicating the literal costs nothing, exposing the private constant would cost a
+    /// SessionStats.cs line.</summary>
     private const int MaxRecentLoot = 250;
 
     /// <summary>Combines <paramref name="mine"/> with <paramref name="mate"/>'s own
-    /// snapshot. <paramref name="mate"/> null (no teammate selected) returns
-    /// <paramref name="mine"/> BY REFERENCE — the no-teammate path must cost nothing,
-    /// and reference identity is what lets a memo above this call skip rebuilding
-    /// entirely when nothing changed. <paramref name="mateCharacterName"/> (repair
-    /// round A3) is the teammate's OWN character name — optional and defaulted to
-    /// null for the carry-forward folds in <c>DuoCompanion.cs</c>, which combine
-    /// two purely companion-side snapshots and have no separate "residual party"
-    /// concept to correct; the real primary+mate combine in <c>DuoSnapshot</c> always
-    /// supplies it. <paramref name="combatSecondsOverride"/> (repair round B3) is the
-    /// real union of both LIVE instances' timestamped combat spans, computed by
-    /// <c>DuoCompanion.UnionCombatSeconds</c> — this pure static method has no access
-    /// to the live <see cref="SessionStats"/> objects the span data lives on, only to
-    /// their already-built snapshots, so the union is computed by the caller and
-    /// handed in. Null (the carry-forward folds, and any direct fixture-level test)
-    /// falls back to <c>Math.Max</c>. <paramref name="mateVisibleKillsByTarget"/>
-    /// (repair round C3) is the TRUE per-target count of the teammate's promoted
-    /// kills AS SEEN IN MINE'S OWN LOG — see
-    /// <c>DuoCompanion._promotedPartyKillsByTarget</c>'s own doc for why this
-    /// replaces subtracting <paramref name="mate"/>'s SELF-REPORTED
-    /// <see cref="StatsSnapshot.YourKills"/>, which can claim a target mine's own
-    /// log never actually saw the teammate kill and delete a genuine THIRD
-    /// groupmate's visible kill of the same name. Null (no primary
-    /// <see cref="SessionStats"/> to have tracked it — the carry-fold path, or a
-    /// direct fixture-level test) falls back to the old self-reported
-    /// subtraction.</summary>
+    /// snapshot. <paramref name="mate"/> null returns <paramref name="mine"/> BY
+    /// REFERENCE — the no-teammate path costs nothing.
+    ///
+    /// <paramref name="mateCharacterName"/> tags the teammate's ability rows.
+    /// <paramref name="combatSecondsOverride"/> is the union of every side's combat spans
+    /// (null falls back to <c>Math.Max</c>). <paramref name="mateVisibleKillsByTarget"/>
+    /// and <paramref name="mateVisibleKillsByKiller"/> are the EXACT party-kill rows the
+    /// teammate's own kills and deaths bumped in <paramref name="mine"/>'s log — subtracted
+    /// row by row, so a kill made before the teammate joined stays a party kill and the
+    /// killer rows keep summing to <see cref="StatsSnapshot.PartyKillCount"/>. Null
+    /// target counts fall back to subtracting the teammate's self-reported
+    /// <see cref="StatsSnapshot.YourKills"/>; null killer counts fall back to dropping the
+    /// rows named for the teammate or their pet (fixture-level callers only).
+    /// <paramref name="recentWindowTotals"/> and <paramref name="currentDpsOverride"/>
+    /// recompute the recent and live rates from summed amounts over one union (null sums
+    /// the two rates — fixtures only). <paramref name="versionOverride"/> replaces the
+    /// summed <see cref="StatsSnapshot.Version"/> so the combined snapshot carries exactly
+    /// <see cref="SessionStats.DuoVersion"/>.</summary>
     public static StatsSnapshot Combine(StatsSnapshot mine, StatsSnapshot? mate,
         string? mateCharacterName = null, double? combatSecondsOverride = null,
         IReadOnlyDictionary<string, int>? mateVisibleKillsByTarget = null,
-        RecentWindowTotals? recentWindowTotals = null)
+        RecentWindowTotals? recentWindowTotals = null,
+        IReadOnlyDictionary<string, int>? mateVisibleKillsByKiller = null,
+        double? currentDpsOverride = null,
+        long? versionOverride = null)
     {
         if (mate is null) return mine;
 
         var combinedKills = mine.YourKillCount + mate.YourKillCount;
 
-        // Repair round A3: mine.PartyKillsByTarget/ByKiller already contain the
-        // teammate's (and their pet's) kills as THIRD-PARTY lines from mine's own
-        // log — the instant those are promoted into combinedKills above, leaving the
-        // party breakdown untouched double-shows them (one kill renders "1 (+1)").
-        // The killer breakdown is keyed by NAME, so the teammate's character name
-        // and pet name are removed outright: nobody else shares either exact
-        // string — that half was never ambiguous.
-        //
-        // Repair round C3: the TARGET breakdown is the one that WAS ambiguous.
-        // mine.PartyKillsByTarget aggregates ACROSS every third-party killer who
-        // hit that target, so a raw subtraction needs to know exactly how much of
-        // a target's count is the teammate's — mateVisibleKillsByTarget is that
-        // exact number (built from the SAME third-party KillEvents that populated
-        // mine.PartyKillsByTarget in the first place, so it can never exceed what
-        // that row actually contains). The self-reported mate.YourKills fallback
-        // stays for callers that never tracked the true visible count.
+        // mine.PartyKillsByTarget/ByKiller already hold the teammate's kills (and their
+        // deaths — upstream files "Garg has been slain by X!" as a party kill too) as
+        // third-party lines from mine's own log. Those exact rows come out here; the
+        // header is then resummed from the residual target rows, so it always agrees
+        // with its own breakdown.
         var residualPartyKillsByTarget = mine.PartyKillsByTarget;
         var residualPartyKillsByKiller = mine.PartyKillsByKiller;
         if (mateVisibleKillsByTarget is not null)
-        {
-            residualPartyKillsByTarget = [.. mine.PartyKillsByTarget
-                .Select(nc => nc with { Count = nc.Count - mateVisibleKillsByTarget.GetValueOrDefault(nc.Name) })
-                .Where(nc => nc.Count > 0)];
-        }
+            residualPartyKillsByTarget = Subtract(mine.PartyKillsByTarget, mateVisibleKillsByTarget);
         else if (mateCharacterName is { Length: > 0 } && mate.YourKills.Count > 0)
-        {
-            var mateKillsByTarget = mate.YourKills.ToDictionary(nc => nc.Name, nc => nc.Count, StringComparer.OrdinalIgnoreCase);
-            residualPartyKillsByTarget = [.. mine.PartyKillsByTarget
-                .Select(nc => nc with { Count = nc.Count - mateKillsByTarget.GetValueOrDefault(nc.Name) })
-                .Where(nc => nc.Count > 0)];
-        }
-        if (mateCharacterName is { Length: > 0 })
-        {
+            residualPartyKillsByTarget = Subtract(mine.PartyKillsByTarget,
+                mate.YourKills.ToDictionary(nc => nc.Name, nc => nc.Count, StringComparer.OrdinalIgnoreCase));
+        if (mateVisibleKillsByKiller is not null)
+            residualPartyKillsByKiller = Subtract(mine.PartyKillsByKiller, mateVisibleKillsByKiller);
+        else if (mateCharacterName is { Length: > 0 })
             residualPartyKillsByKiller = [.. mine.PartyKillsByKiller.Where(nc =>
                 !nc.Name.Equals(mateCharacterName, StringComparison.OrdinalIgnoreCase)
                 && (mate.PetName.Length == 0 || !nc.Name.Equals(mate.PetName, StringComparison.OrdinalIgnoreCase)))];
-        }
-        // Recomputed from the residual list rather than subtracted separately, so the
-        // header always agrees with its own breakdown by construction.
         var residualPartyKillCount = residualPartyKillsByTarget.Sum(nc => nc.Count);
         var combinedDamage = mine.DamageDealt + mate.DamageDealt;
         var combinedHealing = mine.HealingDone + mate.HealingDone;
         var combinedCopper = mine.Copper + mate.Copper;
-        // Repair round B3: CombatSeconds is the real UNION of both sides' timestamped
-        // combat spans — Math.Max undercounts whenever the two fights don't fully
-        // overlap (two independent 10s fights would read as 10s, not 20s), and a
-        // plain sum double-counts whenever they DO overlap. combatSecondsOverride is
-        // that union, computed by DuoCompanion.UnionCombatSeconds against the live
-        // SessionStats instances (this static method only ever sees snapshots, which
-        // carry no span data) — see that method's own doc for how it handles the
-        // 2048-entry trim on very long sessions. Falling back to Math.Max when no
-        // override is supplied keeps this method correct on its own for the carry-
-        // forward folds (which combine two snapshots, not two live instances) and for
-        // direct fixture-level tests.
+        // The union of every side's combat spans (two sequential fights add, two
+        // overlapping ones do not double); Math.Max only for fixture-level callers.
         var combinedCombatSeconds = combatSecondsOverride ?? Math.Max(mine.CombatSeconds, mate.CombatSeconds);
         // Repair round B4 (the user's product decision, superseding A6's hold on
         // this hand-off): every per-player breakdown board now sums to its own
         // header. Ability/spell/hit-type rows have no source-name field that says
         // WHO performed them, so mine's own rows are left untouched and mate's are
-        // tagged with their character name (or "(teammate)" if it isn't known —
-        // mirrors MezTracker.Teammate.cs's own fallback) rather than summed into a
+        // tagged with their character name (or "(teammate)" if it isn't known)
+        // rather than summed into a
         // same-named row, which would silently erase the fact that two different
         // people used the same ability. Person-keyed rows (who hit/healed YOU) carry
         // no such ambiguity — the name is already the external party — and sum by
@@ -171,7 +130,7 @@ public static class DuoStats
         return new StatsSnapshot
         {
             // ---- COMBINE ----
-            Version = mine.Version + mate.Version,
+            Version = versionOverride ?? mine.Version + mate.Version,
             YourKillCount = combinedKills,
             YourKills = MergeCounts(mine.YourKills, mate.YourKills),
             KillsPerHour = combinedKills / hours,
@@ -188,10 +147,10 @@ public static class DuoStats
             MaxHitDesc = mate.MaxHit > mine.MaxHit ? mate.MaxHitDesc : mine.MaxHitDesc,
             CombatSeconds = combinedCombatSeconds,
             SessionDps = combinedCombatSeconds > 0 ? combinedDamage / combinedCombatSeconds : 0,
-            // AMBIGUOUS, resolved: summing two independently-windowed live rates is an
-            // approximation, accepted knowingly (plan Part 2c) rather than picking a
-            // single side's number and hiding the other's activity entirely.
-            CurrentDps = mine.CurrentDps + mate.CurrentDps,
+            // Recomputed by the caller from summed live damage over the union of the
+            // live spans; summing two rates with different denominators is the
+            // fixture-only fallback.
+            CurrentDps = currentDpsOverride ?? mine.CurrentDps + mate.CurrentDps,
             DamageTaken = mine.DamageTaken + mate.DamageTaken,
             AvoidedIncoming = mine.AvoidedIncoming + mate.AvoidedIncoming,
             MeleeHitsTaken = mine.MeleeHitsTaken + mate.MeleeHitsTaken,
@@ -312,6 +271,12 @@ public static class DuoStats
         };
     }
 
+    /// <summary>Each row minus its count in <paramref name="subtract"/>; a row that
+    /// reaches zero is dropped, and a count larger than the row floors at zero.</summary>
+    private static List<NameCount> Subtract(List<NameCount> rows, IReadOnlyDictionary<string, int> subtract) =>
+        [.. rows.Select(nc => nc with { Count = nc.Count - subtract.GetValueOrDefault(nc.Name) })
+            .Where(nc => nc.Count > 0)];
+
     private static List<NameCount> MergeCounts(List<NameCount> a, List<NameCount> b)
     {
         var merged = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -339,9 +304,7 @@ public static class DuoStats
         $"{name}{ActorTagMarker}{(actor is { Length: > 0 } ? actor : "teammate")}";
 
     /// <summary>The inverse of <see cref="TagWithActor"/>. A name with no marker at
-    /// all (mine's own row, or one from a same-actor carry fold that has not yet
-    /// reached the final combine — see <see cref="CombineSameActorCarry"/>) returns
-    /// itself with a null actor.</summary>
+    /// all (mine's own row) returns itself with a null actor.</summary>
     public static (string BaseName, string? Actor) SplitActorTag(string taggedName)
     {
         var idx = taggedName.IndexOf(ActorTagMarker);
@@ -480,12 +443,10 @@ public static class DuoStats
         };
     }
 
-    /// <summary>The raw numerator each side actually dealt in the shared recent window —
-    /// <see cref="SessionStats.SnapshotRecentWindowForCombine"/> — plus the exact UNION
-    /// of both sides' combat spans clipped to that window (built by the caller with
-    /// <see cref="DuoCompanion.UnionCombatSeconds"/> or its own running fold across a
-    /// roster, the same shape the whole-session <c>combatSecondsOverride</c> already
-    /// uses). Passing this to <see cref="Combine"/> makes it recompute Dps/Hps ONCE from
+    /// <summary>The raw numerator each side actually dealt in the shared recent window,
+    /// plus the exact UNION of every side's combat spans clipped to that window (built
+    /// by <see cref="TeammateCombine"/>'s running fold, the same shape as the
+    /// whole-session <c>combatSecondsOverride</c>). Passing this to <see cref="Combine"/> makes it recompute Dps/Hps ONCE from
     /// the summed numerator over the union denominator, instead of summing two
     /// independently-windowed rates (<see cref="CombineRecent"/>'s bug).</summary>
     public readonly record struct RecentWindowTotals(
