@@ -366,6 +366,7 @@ public sealed partial class LogWatcher : IDisposable
                     // the 60-minute gap rule rolls the session when new play begins.
                     _offset = 0;
                     _remainder.Clear();
+                    TeammatesLogRestarted();
                     readable = Math.Min(fs.Length, _endOffset);
                 }
                 if (readable == _offset) return;

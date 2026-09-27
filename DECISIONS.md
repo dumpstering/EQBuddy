@@ -435,9 +435,15 @@ default it could have gone the other way on:
    the file as an optional precision mode. Removed instead: `TeammateLogTail`,
    `ClockDriftEstimator`, `FileIdentity`, `TeammateLogPicker`, the duo mez path and the
    clock warning. The 2026-09-07/09-17 entries above describe that retired feature.
-2. **Who counts is a whitelist.** Group join, an accepted invite and group chat, minus
-   leave/remove/disband; plus names added in Options -> Behavior -> Teammates. Bystanders
-   print the same line shapes, so "any player name" was never an option.
+2. **Who counts is a whitelist.** Group join, an accepted invite, group chat, and three
+   kills landed right after "You gain party experience" (the BRIEF's correlation: at 3 it
+   finds Garg, Kellisanth, Yungweezy and Ripto in the real log and nobody else, with
+   "Targeted (NPC)" and "X told you" names excluded); minus leave/remove/disband and the
+   next LOGIN; plus names added in Options -> Behavior -> Teammates. Bystanders print the
+   same line shapes, so "any player name" was never an option. Other way: keep a
+   groupmate until a leave line — Garg then stayed whitelisted for nine days of solo
+   logins. A quick relog the group survived (2 of 45 logins) gets its members back at
+   that login's first party XP; a "Reset session" that splits the log keeps its members.
 3. **A primary rollover restarts teammate totals but keeps the roster.** Group lines are
    not repeated after a quiet hour; clearing the roster would silently stop counting Garg
    after a dinner break. Other way: clear it with the session.
@@ -446,7 +452,7 @@ default it could have gone the other way on:
    Garg made before joining stays a party kill.
 5. **Mobile shows the same combined snapshot as the desktop; history stays solo**
    (unchanged from 2026-09-17).
-6. **Upstream diff shrank**: `LogWatcher.cs` is `partial` plus two lines; `SessionStats.cs`,
+6. **Upstream diff shrank**: `LogWatcher.cs` is `partial` plus three lines; `SessionStats.cs`,
    `MezTracker.cs` and the ledger stores are byte-identical to upstream again;
    `MainWindow.xaml.cs` keeps six in-place lines at 4,222.
 

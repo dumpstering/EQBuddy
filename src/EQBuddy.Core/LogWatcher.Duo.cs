@@ -5,10 +5,11 @@ namespace EQBuddy.Core;
 
 /// <summary>
 /// The teammate half of the watcher. Teammates are derived from the watched character's
-/// OWN log — there is no second file — so the upstream code needs exactly two lines for
+/// OWN log — there is no second file — so the upstream code needs exactly three lines for
 /// them (one hook in the poll that hands every primary line to
 /// <see cref="SessionStats.Teammates"/>, one <see cref="ResetTeammates"/> in
-/// <see cref="Select(string, long, long)"/>); everything else lives here.
+/// <see cref="Select(string, long, long)"/>, one <see cref="TeammatesLogRestarted"/> where
+/// the poll re-anchors a truncated file); everything else lives here.
 /// </summary>
 public sealed partial class LogWatcher
 {
@@ -25,6 +26,15 @@ public sealed partial class LogWatcher
     {
         _teammatesFrom = _offset;
         _stats.Teammates.Reset();
+    }
+
+    /// <summary>The poll found the file shorter than what it had read (a "Reset session"
+    /// with archiving on moved it to Logsrchive) and starts again from byte 0: a
+    /// re-derivation now replays the new file, from the members of the group at the split.</summary>
+    private void TeammatesLogRestarted()
+    {
+        _teammatesFrom = 0;
+        _stats.Teammates.LogRestarted();
     }
 
     /// <summary>Re-derives the CURRENT session's teammates from the lines the watcher has

@@ -71,6 +71,12 @@ public sealed class DerivedTeammates
     private long _version;
     private IReadOnlyCollection<string> _manualNames = [];
 
+    /// <summary>Who was in the group at the first line of the file the watcher is reading:
+    /// nobody after a Select, whoever was detected when the log was truncated under it (a
+    /// "Reset session" with archiving on splits the log, and the join line goes with the
+    /// archive). A re-derivation starts its roster here.</summary>
+    private string[] _membersAtLogStart = [];
+
     // Roster cache: rebuilding the whitelist on every one of a long log's lines is the
     // hot path of the initial ingest, and the roster only moves on a handful of lines.
     private string[] _rosterCache = [];
@@ -353,7 +359,9 @@ public sealed class DerivedTeammates
     /// <summary>The primary's session rolled over: every teammate's session, and every
     /// correction to the primary's party-kill rows, ends with it. The roster is kept —
     /// a quiet hour does not change who is in the group, and group lines are not
-    /// repeated when play resumes.</summary>
+    /// repeated when play resumes. What does end membership, a logout, is a line of its
+    /// own ("Welcome to EverQuest…" at the next login), which the roster answers in log
+    /// order (<see cref="TeammateRoster.Observe"/>).</summary>
     public void ResetSession()
     {
         lock (_gate)
@@ -375,6 +383,7 @@ public sealed class DerivedTeammates
         lock (_gate)
         {
             _roster.Reset();
+            _membersAtLogStart = [];
             _stats.Clear();
             _lastApplied.Clear();
             _promoted.Clear();
@@ -385,8 +394,9 @@ public sealed class DerivedTeammates
     }
 
     /// <summary>Starts a re-derivation of the current session: a staging instance with
-    /// the manual names as they are now and a roster that knows no member yet (the
-    /// known-NPC exclusions are kept, as every reset keeps them), plus the generation it
+    /// the manual names as they are now and a roster that knows only the members at the
+    /// start of the file (none, unless the log was split under the watcher — see
+    /// <see cref="LogRestarted"/>; the known-NPC exclusions are kept, as every reset keeps them), plus the generation it
     /// must still match to be committed. The caller feeds the staging instance every line
     /// since the log was selected — <see cref="ObserveRosterLine"/> before the session
     /// start, so join and leave lines rebuild membership in log order, and
@@ -396,7 +406,15 @@ public sealed class DerivedTeammates
         var primary = _primary ?? throw new InvalidOperationException(
             "BeginReplay needs the primary-owned instance (SessionStats.Teammates).");
         lock (_gate)
-            return (new DerivedTeammates(primary, _roster.WithoutMembers(), ManualNames), _generation);
+            return (new DerivedTeammates(primary, _roster.WithoutMembers(_membersAtLogStart), ManualNames), _generation);
+    }
+
+    /// <summary>The watched file was truncated and is being read again from its first byte:
+    /// the members detected now are the members at that first byte, so a re-derivation from
+    /// it starts with them rather than with nobody.</summary>
+    internal void LogRestarted()
+    {
+        lock (_gate) _membersAtLogStart = [.. _roster.AutoDetected];
     }
 
     /// <summary>A line from before the current session: only its group lines matter —

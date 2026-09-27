@@ -9,7 +9,7 @@ public static class TeammatesPresentation
     /// <summary>The live line under the heading: who the player's own log has put in the
     /// group this session.</summary>
     public static string DetectedLine(IReadOnlyCollection<string> detected) => detected.Count == 0
-        ? "Detected in your log: nobody yet. A group join, an invite you accept or a group-chat line adds them."
+        ? "Detected in your log: nobody yet. A group join, an invite you accept, group chat or three of their kills that earn you party XP adds them; logging out ends it."
         : $"Detected in your log: {string.Join(", ", detected.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))}.";
 
     /// <summary>Above the hand-added names, or the empty state when there are none.</summary>

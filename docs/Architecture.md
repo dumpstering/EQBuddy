@@ -445,9 +445,13 @@ The fork derives them:
 
 - **Who counts** — `TeammateRoster`: a whitelist, never "any capitalised word" (bystander
   players print the same line shapes). Auto-detected from group lines (a join, an invite
-  the player accepts, group chat), removed on leave/removal/disband, merged with the names
-  the player adds in Options → Behavior → Teammates (`AppSettings.TeammateNames`), minus
-  the player, their pet and any name the log ever labelled `Targeted (NPC)`.
+  the player accepts, group chat) and from `PartyKillsToJoin` (3) kills landed right after
+  "You gain party experience"; removed on leave/removal/disband and at the next login
+  ("Welcome to EverQuest…" — camping leaves the group; a relog the group survived gets its
+  members back at that login's first party XP); merged with the names the player adds in
+  Options → Behavior → Teammates (`AppSettings.TeammateNames`), minus the player, their pet
+  and any name the log ever labelled `Targeted (NPC)` or that "told you" something (only
+  NPCs and pets do).
 - **What they did** — `TeammatePerspective.Rewrite` turns each line naming a roster member
   into that member's first person ("You slash a gnoll…", "You have slain a gnoll!",
   "a gnoll hits YOU…") and the UNCHANGED `LogParser` parses it. `LogParser.cs` has zero
@@ -460,12 +464,15 @@ The fork derives them:
   thread under the watcher lock; `Select` resets it (`ResetTeammates()`, which also records
   where the Select started reading); the primary's own rollover, and the
   manual "Reset session", reset the teammates' sessions (the roster is kept — group lines do not repeat after a quiet hour).
-  That is the entire `LogWatcher.cs` diff: `partial` and two lines. A fault while deriving
+  When the poll finds the file truncated (a "Reset session" with archiving on splits it),
+  `TeammatesLogRestarted()` records the members at that point for a later re-derivation.
+  That is the entire `LogWatcher.cs` diff: `partial` and three lines. A fault while deriving
   a teammate is logged once and never abandons the poll chunk.
 - **Manual names mid-session** — `LogWatcher.RederiveTeammatesAsync` (`LogWatcher.Duo.cs`)
   re-derives the current session from the bytes the watcher has already read, so a name
   added in Options counts from the session's start and no line is fed twice. It replays
-  from where the Select started, with a roster that knows no member yet: lines before the
+  from where the Select started (or from byte 0 of a split log, with the members at the
+  split), with a roster that knows no other member yet: lines before the
   session start only rebuild membership in log order, so a member who joined late is not
   credited with what they did as a bystander. The replay goes into a staging
   `DerivedTeammates` and is committed in one step with one version bump

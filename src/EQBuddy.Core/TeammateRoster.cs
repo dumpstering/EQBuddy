@@ -10,14 +10,18 @@ namespace EQBuddy.Core;
 /// for. Merged with the user's own manually-typed list (<c>AppSettings.TeammateNames</c>)
 /// by <see cref="Roster"/>, which is the ONE place both sources combine.
 ///
-/// <b>Signals used (from the design survey), and one deliberately NOT implemented:</b>
-/// join/leave/invite lines, "X tells the group", and "Targeted (NPC): X" (an exclusion,
-/// never an inclusion) are exact, deterministic string shapes — cheap to get right and
-/// cheap to test. The survey's fourth signal, kill-plus-party-XP timing correlation, is
-/// a probabilistic join over two independent line streams within a time window; it is
-/// NOT implemented here — the manual list in Options is the fallback for a teammate this
-/// class never sees announced (someone already in the group when you logged in, in a
-/// log whose window predates any join/invite/tell line). Documented rather than faked.
+/// <b>Signals used (from the design survey):</b> join/leave/invite lines, "X tells the
+/// group", and "Targeted (NPC): X" / "X told you, '...'" (exclusions, never inclusions)
+/// are exact string shapes. The fourth, kill-plus-party-XP correlation, covers a member no
+/// group line names: someone already in the group when you joined it, or a group whose
+/// join line a "Reset session" moved to Logsrchive. See <see cref="PartyKillsToJoin"/>.
+///
+/// <b>Membership ends at login, unless the group is still there.</b> Camping normally
+/// drops you from the group: in the player's real log, 43 of 45 logins are followed by a
+/// fresh invite/join (or no party XP at all) before the next "You gain party experience".
+/// The other two were quick relogs the group survived. So a login moves the detected
+/// members aside, and that login's first party-XP line — before any group line — puts them
+/// back; the next login, or any group line, drops them for good.
 ///
 /// <b>Whitelist only, exact-word match:</b> a bystander PC is never counted just for
 /// appearing in the log — <see cref="TeammatePerspective.Rewrite"/> (which does the
@@ -49,9 +53,39 @@ public sealed class TeammateRoster
     private static readonly Regex UserLeftOrDisbandedRx = new(
         @"^(?:You have left the group\.|Your group has been disbanded\.?)$", RegexOptions.Compiled);
 
-    private readonly HashSet<string> _autoDetected = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Regex SlainByNameRx = new(
+        @"^.+ has been slain by (?<name>[A-Z][a-z]+)!$", RegexOptions.Compiled);
+    // Players "tell" you; merchants, trainers and pets (the player's own "Attacking a bat
+    // Master.") "told" you — no groupmate in the real log ever did.
+    private static readonly Regex NpcToldYouRx = new(
+        @"^(?<name>[A-Za-z]+) told you, '", RegexOptions.Compiled);
+    private const string LoginPrefix = "Welcome to EverQuest";
+    private const string PartyXpPrefix = "You gain party experience";
 
-    /// <summary>Every name this session has ever seen the client label an NPC — a
+    /// <summary>Kill-plus-party-XP correlation: a single-word name that lands a kill
+    /// ("A gnoll has been slain by Garg!") right after "You gain party experience" — the
+    /// client prints the XP line first — this many times since the last login joins the
+    /// roster. Measured on the player's 850,000-line log with the NPC exclusions below in
+    /// force: at 3, Garg, Kellisanth, Yungweezy and Ripto are detected and nobody else;
+    /// no bystander ever correlated more than once, and the only name at 2 that was not
+    /// already excluded (Konobtik, a pet) is excluded at 3.</summary>
+    internal const int PartyKillsToJoin = 3;
+
+    /// <summary>How many lines after a party-XP line its kill line may come. Any kill
+    /// line closes the window, so one XP line never vouches for two kills.</summary>
+    private const int PartyXpWindowLines = 3;
+
+    private readonly HashSet<string> _autoDetected = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _partyXpKills = new(StringComparer.OrdinalIgnoreCase);
+    private int _partyXpLinesLeft;
+
+    /// <summary>The members detected when the player last logged in, held aside until
+    /// that login's first party XP (the group survived: they come back) or its first group
+    /// line or the next login (it did not: they are dropped).</summary>
+    private string[] _beforeLogin = [];
+
+    /// <summary>Every name this session has ever seen the client label an NPC ("Targeted
+    /// (NPC): X", or "X told you, '...'", which only NPCs and pets say) — a
     /// whitelist member is refused permanently once its name shows up here, since the
     /// same string can never be trusted as a player again this session (design survey
     /// §F: "the risk comes from generic single-word names"). Never cleared by
@@ -75,9 +109,10 @@ public sealed class TeammateRoster
     /// starts-with/contains check per pattern is enough before the regex runs.
     ///
     /// Membership tracks who is in the group NOW, not everyone who ever appeared to
-    /// be: a name is added on a real join (an accepted invite or the join line) and
-    /// removed on that person leaving, being removed, or the group disbanding — see
-    /// each regex's own doc for the line it answers. A name dropped here does not
+    /// be: a name is added on a real join (an accepted invite or the join line), group
+    /// chat or <see cref="PartyKillsToJoin"/> party-XP kills, and removed on that person
+    /// leaving, being removed, the group disbanding, or the player logging in (held
+    /// aside for that login's first party XP — see the class doc). A name dropped here does not
     /// lose the stats it already accrued: <see cref="DerivedTeammates.KnownTeammates"/>
     /// keeps every name this session has ever applied an event for regardless of
     /// whether <see cref="Roster"/> still lists them.
@@ -93,6 +128,38 @@ public sealed class TeammateRoster
     public void Observe(string msg, string? primaryName)
     {
         if (string.IsNullOrEmpty(msg)) return;
+        var partyXpJustBefore = _partyXpLinesLeft > 0;
+        if (partyXpJustBefore) _partyXpLinesLeft--;
+
+        if (msg.StartsWith(PartyXpPrefix, StringComparison.Ordinal))
+        {
+            _partyXpLinesLeft = PartyXpWindowLines;
+            if (_beforeLogin.Length > 0) { _autoDetected.UnionWith(_beforeLogin); _beforeLogin = []; Version++; }
+            return;
+        }
+        if (msg.StartsWith(LoginPrefix, StringComparison.Ordinal))
+        {
+            _beforeLogin = [.. _autoDetected];
+            _autoDetected.Clear();
+            _partyXpKills.Clear();
+            _partyXpLinesLeft = 0;
+            Version++;
+            return;
+        }
+        if (msg[^1] == '!' && (msg.StartsWith("You have slain ", StringComparison.Ordinal)
+                               || msg.Contains(" has been slain by ", StringComparison.Ordinal)))
+        {
+            _partyXpLinesLeft = 0;
+            if (partyXpJustBefore && SlainByNameRx.Match(msg) is { Success: true } kill)
+                CreditPartyKill(kill.Groups["name"].Value, primaryName);
+            return;
+        }
+        if (msg.Contains(" told you, '", StringComparison.Ordinal))
+        {
+            if (NpcToldYouRx.Match(msg) is { Success: true } npc && _everNpc.Add(npc.Groups["name"].Value)) Version++;
+            return;
+        }
+
         // Every shape below names the group or the party, or is a Targeted line — one
         // vectorised scan skips the regexes on the other ~99.9% of a long replay.
         if (!msg.Contains("group", StringComparison.Ordinal) && !msg.Contains(" party.", StringComparison.Ordinal)
@@ -100,23 +167,57 @@ public sealed class TeammateRoster
             return;
 
         Match m;
-        if ((m = JoinedGroupRx.Match(msg)).Success) _autoDetected.Add(m.Groups["name"].Value);
-        else if ((m = AgreedToJoinRx.Match(msg)).Success) _autoDetected.Add(m.Groups["name"].Value);
+        if ((m = JoinedGroupRx.Match(msg)).Success) Join(m.Groups["name"].Value);
+        else if ((m = AgreedToJoinRx.Match(msg)).Success) Join(m.Groups["name"].Value);
         else if ((m = TellsGroupRx.Match(msg)).Success) _autoDetected.Add(m.Groups["name"].Value);
-        else if ((m = LeftGroupRx.Match(msg)).Success) _autoDetected.Remove(m.Groups["name"].Value);
+        else if ((m = LeftGroupRx.Match(msg)).Success) Leave(m.Groups["name"].Value);
         else if ((m = RemovedFromPartyRx.Match(msg)).Success)
         {
             var removed = m.Groups["name"].Value;
             if (primaryName is { Length: > 0 } && string.Equals(removed, primaryName, StringComparison.Ordinal))
-                _autoDetected.Clear();
+                GroupEnded();
             else
-                _autoDetected.Remove(removed);
+                Leave(removed);
         }
-        else if (UserRemovedRx.IsMatch(msg) || UserLeftOrDisbandedRx.IsMatch(msg)) _autoDetected.Clear();
+        else if (UserRemovedRx.IsMatch(msg) || UserLeftOrDisbandedRx.IsMatch(msg)) GroupEnded();
         else if (msg[0] == 'T' && (m = TargetedNpcRx.Match(msg)).Success) _everNpc.Add(m.Groups["name"].Value);
         else return;
         // A matched line may still change nothing (a repeated join), but a membership
         // swap of equal size would not move either count — so any matched line bumps.
+        Version++;
+    }
+
+    // A group line after a login announces the group afresh: whoever was set aside at the
+    // login is no longer assumed to be in it.
+    private void Join(string name)
+    {
+        _beforeLogin = [];
+        _autoDetected.Add(name);
+    }
+
+    private void Leave(string name)
+    {
+        _beforeLogin = [];
+        _autoDetected.Remove(name);
+        _partyXpKills.Remove(name);
+    }
+
+    private void GroupEnded()
+    {
+        _beforeLogin = [];
+        _autoDetected.Clear();
+        _partyXpKills.Clear();
+    }
+
+    private void CreditPartyKill(string name, string? primaryName)
+    {
+        if (_autoDetected.Contains(name) || _everNpc.Contains(name)
+            || string.Equals(name, primaryName, StringComparison.OrdinalIgnoreCase))
+            return;
+        var kills = _partyXpKills.GetValueOrDefault(name) + 1;
+        if (kills < PartyKillsToJoin) { _partyXpKills[name] = kills; return; }
+        _partyXpKills.Remove(name);
+        _autoDetected.Add(name);
         Version++;
     }
 
@@ -147,17 +248,22 @@ public sealed class TeammateRoster
     public void Reset()
     {
         _autoDetected.Clear();
+        _partyXpKills.Clear();
+        _partyXpLinesLeft = 0;
+        _beforeLogin = [];
         Version++;
     }
 
-    /// <summary>A copy that knows no member yet but keeps every known-NPC exclusion — the
-    /// starting point for re-deriving a session from the first line the watcher read, so
-    /// membership is rebuilt in log order instead of whitelisting today's members
-    /// retroactively.</summary>
-    internal TeammateRoster WithoutMembers()
+    /// <summary>A copy that keeps every known-NPC exclusion and knows only
+    /// <paramref name="members"/> — the members at the first line the watcher read (none
+    /// after a Select; whoever was in the group when a "Reset session" split the log) — the
+    /// starting point for re-deriving a session from that line, so membership is rebuilt
+    /// in log order instead of whitelisting today's members retroactively.</summary>
+    internal TeammateRoster WithoutMembers(IEnumerable<string>? members = null)
     {
         var copy = new TeammateRoster();
         copy._everNpc.UnionWith(_everNpc);
+        if (members is not null) copy._autoDetected.UnionWith(members);
         return copy;
     }
 
