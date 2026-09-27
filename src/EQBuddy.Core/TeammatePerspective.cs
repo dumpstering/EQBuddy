@@ -181,8 +181,21 @@ public static class TeammatePerspective
 
         if (damageBy && (m = shapes.SubjectSchoolDamage.Match(msg)).Success)
         {
-            var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
-            return [new TeammateLine(actor, $"You hit {m.Groups["rest"].Value}", isPet)];
+            var rawActor = m.Groups["actor"].Value;
+            var rest = m.Groups["rest"].Value;
+            // A life-tap-shaped spell that recoils (a resist/immune backlash) can hit its
+            // OWN caster: the raw line is "<actor> hit <actor> for N points of magic
+            // damage by Lifebite." — EQ's third-person rendering has no reflexive pronoun
+            // for this shape the way the heal/miss shapes say "himself"/"herself", so it
+            // names the caster twice. Rewritten literally that would read "You hit <actor>
+            // for N ...", which LogParser (with no way to know "<actor>" is the caster's
+            // own name) counts as N more points of ordinary outgoing damage against an
+            // opponent that was never there. Refused rather than credited — the same
+            // treatment the primary's own "You hurt yourself for N points." already gets:
+            // self-inflicted damage is never counted as damage DEALT.
+            if (rest.StartsWith(rawActor + " for ", StringComparison.Ordinal)) return [];
+            var (actor, isPet) = ResolveActor(rawActor);
+            return [new TeammateLine(actor, $"You hit {rest}", isPet)];
         }
 
         if (nonMelee && (m = shapes.SubjectDamageShieldDealt.Match(msg)).Success)

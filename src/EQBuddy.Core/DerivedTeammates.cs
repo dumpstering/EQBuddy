@@ -91,6 +91,24 @@ public sealed class DerivedTeammates
     private string[] _rosterCache = [];
     private (int RosterVersion, string? Primary, string? Pet) _rosterKey = (-1, null, null);
 
+    /// <summary>A short ring buffer of the most recently observed raw primary lines
+    /// (timestamp + already-normalized message), oldest first. Exists for exactly one
+    /// purpose: a name that <see cref="TeammateRoster"/> recognizes via the kill-plus-
+    /// party-XP correlation (<see cref="TeammateRoster.PartyKillsToJoin"/>) is recognized
+    /// on the KILL line ("X has been slain by Garg!") — a line that carries no damage of
+    /// its own. The hit that actually finished the mob ("Garg punches X for N points of
+    /// damage. (Finishing Blow)") is a SEPARATE, EARLIER log line, so by the time the kill
+    /// line updates the roster, that hit has already been read with Garg absent from it
+    /// and its damage was never rewritten for anybody. See <see cref="ReplayBufferedLinesFor"/>.
+    /// Bounded and cheap: a handful of short strings, cleared on every session/roster
+    /// reset so nothing here ever reaches across a session boundary.</summary>
+    private readonly Queue<(DateTime Ts, string Msg)> _recentLines = new();
+
+    /// <summary>Comfortably covers the widest gap measured between a finishing-blow hit
+    /// and the "has been slain by" line that follows it (faction-adjustment lines print
+    /// in between) — 8 lines in the canary's own fixture — with margin to spare.</summary>
+    private const int RecentLineBufferCapacity = 32;
+
     /// <summary>A standalone instance (tests, tools): the caller feeds it with
     /// <see cref="Observe"/> and resets it explicitly.</summary>
     public DerivedTeammates() { }
@@ -232,6 +250,19 @@ public sealed class DerivedTeammates
                 Corrections.For(_deaths, death.Target).Add(death.Target, death.Killer);
 
             var roster = RosterLocked(primaryName, primaryPetName);
+
+            // The kill-plus-party-XP correlation's OWN evidence line (the kill) carries
+            // no damage of its own — the hit that actually finished the mob is a separate,
+            // earlier line, read while this name was not yet recognized. That earlier
+            // line's damage/heal was never credited to anybody; retroactively apply it
+            // now, from the buffer, BEFORE this line's own (normal) processing below.
+            // Deliberately scoped to ONLY this one join mechanism (TeammateRoster.
+            // LastPartyKillPromotion) — a group-line or hand-added join's own line never
+            // carries damage, and widening this to "any newly-recognized name" wrongly
+            // replayed a member's leave-to-rejoin quiet period too (measured: it does).
+            if (_roster.LastPartyKillPromotion is { } promoted && roster.Contains(promoted, StringComparer.OrdinalIgnoreCase))
+                ReplayBufferedLinesFor(promoted, primaryName);
+
             var appliedTo = roster.Length == 0 || !ContainsAnyName(msg, roster)
                 ? null
                 : ApplyRewrittenLines(ts, msg, primaryName, roster, primaryPartyKill ? primaryEvent as KillEvent : null);
@@ -254,6 +285,45 @@ public sealed class DerivedTeammates
                         _lastApplied[name] = ts;
                         _version++;
                     }
+
+            _recentLines.Enqueue((ts, msg));
+            while (_recentLines.Count > RecentLineBufferCapacity) _recentLines.Dequeue();
+        }
+    }
+
+    /// <summary>Re-reads the buffered recent lines (see <see cref="_recentLines"/>) for
+    /// one line naming <paramref name="name"/>, who was NOT yet a recognized teammate
+    /// when they were first read and just became one. The roster passed to
+    /// <see cref="TeammatePerspective.Rewrite"/> is <paramref name="name"/> ALONE —
+    /// never the full current roster — so a buffered line naming a teammate who was
+    /// already recognized at the time (and so already correctly credited once) cannot
+    /// be credited to them a second time; only the newly-recognized name can still be
+    /// missing anything from that line. Caller holds _gate.</summary>
+    private void ReplayBufferedLinesFor(string name, string? primaryName)
+    {
+        var single = new[] { name };
+        foreach (var (bts, bmsg) in _recentLines)
+        {
+            if (!ContainsAnyName(bmsg, single)) continue;
+            foreach (var line in TeammatePerspective.Rewrite(bmsg, primaryName ?? "", single))
+            {
+                if (!string.Equals(line.Actor, name, StringComparison.OrdinalIgnoreCase)) continue;
+                var evt = LogParser.Parse(bts, line.Line);
+                if (evt is null) continue;
+                if (line.IsPet) evt = TagPet(evt);
+                // A KillEvent here would need the primary's own party-kill promotion
+                // bookkeeping (see ApplyRewrittenLines) to stay consistent, but no
+                // buffered line reaches this path as one in practice: the kill line
+                // itself is what performs the roster promotion, is processed by the
+                // NORMAL path (with the primary-party-kill context it actually has),
+                // and by then is no longer "buffered" — it is the current line. A
+                // future shape that could reach here as a KillEvent is refused rather
+                // than credited with a guessed promotion.
+                if (evt is KillEvent) continue;
+                GetOrCreate(line.Actor).Apply(evt);
+                _lastApplied[line.Actor] = bts;
+                _version++;
+            }
         }
     }
 
@@ -432,6 +502,7 @@ public sealed class DerivedTeammates
             _lastApplied.Clear();
             _promoted.Clear();
             _deaths.Clear();
+            _recentLines.Clear();
             _generation++;
             _version++;
         }
@@ -455,6 +526,7 @@ public sealed class DerivedTeammates
             _lastApplied.Clear();
             _promoted.Clear();
             _deaths.Clear();
+            _recentLines.Clear();
             _generation++;
             _version++;
         }

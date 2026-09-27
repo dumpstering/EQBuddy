@@ -150,10 +150,23 @@ public sealed class TeammateRoster
         Observe(msg, primaryName);
     }
 
+    /// <summary>The name THIS call to <see cref="Observe(string, string?)"/> promoted
+    /// onto the roster via the kill-plus-party-XP correlation (<see cref="CreditPartyKill"/>)
+    /// — null on every other call, including one that promotes a name by a group line or
+    /// a hand-added join. Kill-correlation is the one join mechanism whose OWN evidence
+    /// line (the kill) carries no data about the earlier hit that actually finished the
+    /// mob — see <see cref="DerivedTeammates.ReplayBufferedLinesFor"/>, the only reader.
+    /// Deliberately narrow: a group-line join or a hand-added join needs no retroactive
+    /// replay (the join line itself never carries damage), and scoping this to the one
+    /// mechanism that does keeps a member leaving and later rejoining from having a
+    /// leave-to-rejoin quiet period wrongly replayed.</summary>
+    internal string? LastPartyKillPromotion { get; private set; }
+
     /// <summary><see cref="Observe(DateTime, string, string?)"/> without a timestamp: no
     /// hand-added join is placed. For callers that feed group lines alone.</summary>
     public void Observe(string msg, string? primaryName)
     {
+        LastPartyKillPromotion = null;
         if (string.IsNullOrEmpty(msg)) return;
         var partyXpJustBefore = _partyXpLinesLeft > 0;
         if (partyXpJustBefore) _partyXpLinesLeft--;
@@ -245,6 +258,7 @@ public sealed class TeammateRoster
         if (kills < PartyKillsToJoin) { _partyXpKills[name] = kills; return; }
         _partyXpKills.Remove(name);
         _autoDetected.Add(name);
+        LastPartyKillPromotion = name;
         Version++;
     }
 
