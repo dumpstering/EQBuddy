@@ -25,13 +25,13 @@ internal sealed class SettingsTeammatesView
 {
     /// <summary>What the feature does and does not see, and the one setting it depends on.</summary>
     private const string TeammatesBlurb =
-        "Your teammates come from your own log: a group join, an invite you accept, group "
-        + "chat or three of their kills that earn you party XP adds them, and logging out "
-        + "ends it. What your log shows of them (damage, kills, heals, damage "
-        + "taken) joins your totals here and on your phone. No file from them is needed. "
-        + "Their XP, loot and coin never appear in your log, so those stay yours. Keep the "
-        + "chat filters for other players' hits and misses switched on, or their fighting "
-        + "never reaches your log. Add a name for someone who was grouped before your log began.";
+        "Your teammates come from your own log: a group join, an accepted invite, group chat "
+        + "or three of their kills that earn you party XP adds them; logging out ends it. What "
+        + "your log shows of them (damage, kills, heals, damage taken) joins your totals here "
+        + "and on your phone. No file from them is needed. Their XP, loot and coin never "
+        + "appear in your log, so those stay yours. Keep the chat filters for other players' "
+        + "hits and misses on, or their fighting never reaches your log. Add a name for "
+        + "someone grouped before your log began.";
 
     private readonly MainWindow _main;
     private readonly Func<object, object> _resource;
