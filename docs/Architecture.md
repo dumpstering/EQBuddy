@@ -45,14 +45,14 @@ build tripled since they were written — and then drifted 10-15% again in FOUR 
 why `DocumentationSizeTests` checks this table against the repo: a measurement nobody
 re-measures rots without anyone touching it.
 
-Re-measured 2026-09-26 (teammate-log sync onto upstream c8259fe3).
+Re-measured 2026-09-26 (own-log teammates, forked from upstream c8259fe3).
 
 | Project | Files | Lines | Role |
 |---|---:|---:|---|
-| `EQBuddy.Core` | 144 | 40,329 | Parsing, aggregation, settings, catalogs, wiki, the v1 profile import. No UI. |
-| `EQBuddy.UI.Shared` | 136 | 22,328 | View-model/formatting shared by the widget and the mobile projection. **Framework-free — enforced by `ArchitectureTests`.** |
+| `EQBuddy.Core` | 143 | 39,574 | Parsing, aggregation, settings, catalogs, wiki, the v1 profile import. No UI. |
+| `EQBuddy.UI.Shared` | 136 | 22,358 | View-model/formatting shared by the widget and the mobile projection. **Framework-free — enforced by `ArchitectureTests`.** |
 | `EQBuddy.Companion` | 18 | 5,950 | LAN HTTP+WebSocket server and the mobile page. **UI-toolkit-free on purpose** — which is what let the Avalonia build host it unchanged while that lane existed, and what keeps it honest now that only one does. |
-| `EQBuddy` | 117 | 41,502 | The WPF widget and its windows. Now the largest project in the repo. |
+| `EQBuddy` | 117 | 41,559 | The WPF widget and its windows. Now the largest project in the repo. |
 
 ## 2. Load-bearing invariants
 
@@ -77,7 +77,7 @@ Break one of these and something quietly goes wrong rather than failing loudly.
 
 ## 3. Where the risk is concentrated
 
-**`src/EQBuddy` — 41,502 lines, and no test project references it.** Two routes now
+**`src/EQBuddy` — 41,559 lines, and no test project references it.** Two routes now
 reach into it anyway, and neither is a unit test:
 
 - **Pure arithmetic extracted to `UI.Shared`** (`WidgetMetrics`, `HudChipRow`) —
@@ -437,8 +437,61 @@ Countdowns are unaffected by any of this — devices compute them locally from
 authoritative timestamps, and they are excluded from the section fingerprints. A ticking
 clock is not news, and including one would wake every device on every pump.
 
-**Duo / teammate isolation.** Being rewritten for the own-log teammate design (no
-teammate file): see `DerivedTeammates`, `TeammatePerspective` and `TeammateCombine`.
+**Duo totals from your own log (own-log teammates, 2026-09-26).** There is no teammate
+file. A groupmate's fighting is already in the watched character's own log — "Garg slashes
+a gnoll for 91 points of damage.", "A gnoll has been slain by Garg!", "You healed Garg
+for 104 hit points." — and upstream parses those lines but keeps none of Garg's numbers.
+The fork derives them:
+
+- **Who counts** — `TeammateRoster`: a whitelist, never "any capitalised word" (bystander
+  players print the same line shapes). Auto-detected from group lines (a join, an invite
+  the player accepts, group chat), removed on leave/removal/disband, merged with the names
+  the player adds in Options → Behavior → Teammates (`AppSettings.TeammateNames`), minus
+  the player, their pet and any name the log ever labelled `Targeted (NPC)`.
+- **What they did** — `TeammatePerspective.Rewrite` turns each line naming a roster member
+  into that member's first person ("You slash a gnoll…", "You have slain a gnoll!",
+  "a gnoll hits YOU…") and the UNCHANGED `LogParser` parses it. `LogParser.cs` has zero
+  diff.
+- **Where it goes** — `DerivedTeammates` holds one plain `new SessionStats()` per
+  teammate: no store, no subscriber, never archived (`TeammateIsolationTests` proves it by
+  reflection). The production instance is `SessionStats.Teammates`, owned by the watched
+  character's own session. `LogWatcher`'s poll hands it every line, with the event the
+  primary just applied (`_stats.Teammates.ObservePrimaryLine(ts, msg, evt)`), on the poll
+  thread under the watcher lock; `Select` resets it; the primary's own rollover resets the
+  teammates' sessions (the roster is kept — group lines do not repeat after a quiet hour).
+  That is the entire `LogWatcher.cs` diff: `partial` and two lines. A fault while deriving
+  a teammate is logged once and never abandons the poll chunk.
+- **Manual names mid-session** — `LogWatcher.RederiveTeammatesAsync` (`LogWatcher.Duo.cs`)
+  re-derives the current session from the bytes the watcher has already read, so a name
+  added in Options counts from the session's start and no line is fed twice.
+
+**Combining is display-only**: `SessionStats.DuoSnapshot` → `TeammateCombine.Combine`,
+folding `DuoStats.Combine` once per teammate. `MainWindow.BuildSnapshot()` calls
+`DuoSnapshot` with the settings' recent window and tracked rules, and BOTH the desktop and
+EQBuddy Mobile read that one snapshot. The archiver, the 5-minute checkpoint and the wiki
+pack call the plain `Snapshot()` and stay the watched character alone. With no known
+teammate `DuoSnapshot` returns the solo snapshot itself.
+
+| Rule | Fields |
+|---|---|
+| **Sum** — a teammate's activity reaches the primary's own stats only as third-party events that never touch its totals | `YourKillCount`/`YourKills`, `DamageDealt` and its splits, hits/crits/misses, damage taken, `HealingDone`/`HealingReceived` |
+| **Union, then recompute — never sum two rates** | `CombatSeconds` is the union of every side's combat spans; `SessionDps`/`Hps` from summed amounts over it. The recent window's `Dps`/`Hps` are summed window damage over the union of window spans, all sides anchored on ONE window end; `CurrentDps` is summed live damage over the union of the still-live spans |
+| **Party kills, corrected exactly** | The primary's log files a teammate's kill AND a teammate's death ("Garg has been slain by X!") as party kills. `DerivedTeammates` records, off the primary's own parsed `KillEvent`, exactly which target and killer rows each bumped; `DuoStats.Combine` subtracts those counts row by row. A kill made before the teammate joined stays a party kill, and the killer rows keep summing to `PartyKillCount`. The corrections are scoped to the PRIMARY's session — cleared on its rollover or a re-selection, never by a teammate's own instance rolling |
+| **Stays yours — never in your log for anyone else** | XP and everything derived from it, AA, loot, coin, faction, levels, deaths, inventory, `Mobs`, encounters |
+| **Ability rows are tagged, not merged** | A teammate's "Slash" is its own row, labelled "Slash (Garg)" on the desktop (`BreakdownRows`) and the phone (`CompanionProjection`) |
+
+**The version trap.** The 50 ms Mobile pump's gate and the snapshot it pushes must read the
+SAME number or the pump pushes forever. `SessionStats.DuoVersion` is the primary's
+`CurrentVersion` plus `DerivedTeammates.Version` (0 while no teammate is known), and the
+combined snapshot's `Version` is built from exactly those two parts. Both Mobile paths use
+it. `DuoSnapshotTests` reproduces the leak with the wrong number before proving the right
+one pushes nothing.
+
+**Known limits, stated honestly.** Coverage is a lower bound: another player's combat only
+reaches your log within message range and with EverQuest's "other hits/misses" chat
+filters on. A teammate's XP, loot and coin are never printed in your log. Replaying a long
+log costs more with a teammate on the roster (measured on the player's 66 MB log: 8.2 s
+solo, 11.1 s with Garg).
 
 ## 5. Known limits, stated honestly
 

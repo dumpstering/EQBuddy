@@ -33,12 +33,23 @@ where each of its assertions went.
 
 ## 1b. Teammates derived from your own log (duo sessions)
 
-Being rewritten for the own-log teammate design (no teammate file).
+No teammate file: a groupmate's numbers are derived from the watched character's OWN log
+— see `docs/Architecture.md`'s "Duo totals from your own log" for the model and the combine
+table.
 
 | Expectation | Held by |
 |---|---|
-| **A teammate's own `SessionStats` never gets a durable store, a subscriber, or the watched character's identity** | **Auto** — `TeammateIsolationTests.ADerivedTeammateCarriesNoDurableStoreAndNoSubscriber` |
+| **End to end: with no file and no manual names, the real `LogWatcher` over 292 real log lines puts Garg on the roster from the join line, and the desktop snapshot AND the phone projection carry his damage and kills (counted independently off the text), with party-kill rows corrected and a bystander counted for nobody** | **Auto** — `OwnLogTeammatesEndToEndTests.GargsDamageAndKillsReachTheDesktopAndThePhoneFromTheWatchedLogAlone` |
+| A re-selection derives the same teammates (not double); a character switch drops them; a manual name added mid-session counts from the session start exactly once | **Auto** — `OwnLogTeammatesEndToEndTests.ASecondReplayOfTheSameLogDerivesTheSameTeammatesNotDoubleThem`, `.SwitchingToAnotherCharactersLogDropsTheTeammates`, `.AManualNameAddedMidSessionCountsFromTheSessionStartExactlyOnce` |
+| **A teammate's own `SessionStats` never gets a durable store, a subscriber, or the watched character's identity** | **Auto** — `TeammateIsolationTests.ADerivedTeammateCarriesNoDurableStoreAndNoSubscriber`, `TeammateActorLocalGuardTests` |
 | **`DuoStats.Combine` classifies EVERY `StatsSnapshot` property as combined or pass-through** | **Auto** — `DuoStatsTests.EveryStatsSnapshotPropertyIsClassifiedAsCombinedOrPassedThrough` |
+| A stale teammate death from an earlier primary session never subtracts a later session's party kill | **Auto** — `DuoSnapshotTests.AStaleTeammateDeathFromAnEarlierSessionNeverEatsALaterPartyKill` |
+| Killer rows lose only a teammate's PROMOTED kills (pre-join kills stay) and still sum to `PartyKillCount`; a death moves out of both breakdowns | **Auto** — `DuoSnapshotTests.ATeammatesPreJoinKillsStayPartyKillsAndKillerRowsSumToTheHeader`, `.ADeathBeforeTheGroupFormedIsCorrectedOnceTheyAreATeammate`, `DerivedTeammatesDoubleCountTests.TeammateDeathIsNotAPartyKill` |
+| Current, recent and session rates are summed amounts over one union of spans, never a sum of rates | **Auto** — `DuoSnapshotTests.CurrentDpsIsSummedLiveDamageOverTheUnionOfLiveSpans`, `.RecentDpsIsSummedDamageOverTheUnionOfWindowSpans`, `.TwoDisjointFightsUnionRatherThanTakeTheMax` |
+| The combined snapshot keeps the caller's recent window and tracked rules | **Auto** — `DuoSnapshotTests.DuoSnapshotKeepsTheCallersRecentWindowAndTrackedRules` |
+| `DuoVersion` always equals the combined snapshot's `Version`; the pump fed any other number leaks pushes forever | **Auto** — `DuoSnapshotTests.DuoVersionEqualsTheDuoSnapshotsVersionInEveryState`, `.ThePumpLeaksPushesOnlyWhenTheGateReadsADifferentVersionThanItObserves` |
+| Archives, checkpoints and the wiki pack stay the watched character alone | **Auto** — `DuoSnapshotTests.ArchivesStaySoloWhileTheDisplayCombines` |
+| A hand-typed name is normalised to the log's spelling or refused with a reason | **Auto** — `TeammatesPresentationTests` |
 
 ## 2. What the numbers mean
 
@@ -872,7 +883,7 @@ so it can be pinned without an audio device. Both UIs obey the same plan.
 
 ## 5. The gap — read this before trusting the suite
 
-**`src/EQBuddy` (the WPF app, 41,502 lines across 117 files) has no automated coverage.
+**`src/EQBuddy` (the WPF app, 41,559 lines across 117 files) has no automated coverage.
 No test project references it.** (Size pinned by `DocumentationSizeTests` — it was still
 claiming 14,432 across 37 on 2026-08-24, understating the untested surface by a third.)
 

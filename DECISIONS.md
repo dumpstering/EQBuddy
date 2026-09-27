@@ -425,3 +425,29 @@ default it could have gone the other way on:
    (1) fixed and the switch shipped, it has nothing left to cover.
 
 - Dranak (Claude Code), Sr Executor
+
+## 2026-09-26 - Fork: teammates come from your own log; the teammate-file feature is retired
+
+1. **No teammate file.** The user: "this should not require any team log file, it should
+   just do everything it can from my logs". Garg's hits, kills, deaths and heals are already
+   in the player's own log; `TeammatePerspective` rewrites them into Garg's first person
+   and the unchanged parser feeds an isolated `SessionStats` per teammate. Other way: keep
+   the file as an optional precision mode. Removed instead: `TeammateLogTail`,
+   `ClockDriftEstimator`, `FileIdentity`, `TeammateLogPicker`, the duo mez path and the
+   clock warning. The 2026-09-07/09-17 entries above describe that retired feature.
+2. **Who counts is a whitelist.** Group join, an accepted invite and group chat, minus
+   leave/remove/disband; plus names added in Options -> Behavior -> Teammates. Bystanders
+   print the same line shapes, so "any player name" was never an option.
+3. **A primary rollover restarts teammate totals but keeps the roster.** Group lines are
+   not repeated after a quiet hour; clearing the roster would silently stop counting Garg
+   after a dinner break. Other way: clear it with the session.
+4. **Party-kill corrections are scoped to the PRIMARY's session** and recorded off the
+   primary's own kill line, so a stale death can never eat a later real kill, and a kill
+   Garg made before joining stays a party kill.
+5. **Mobile shows the same combined snapshot as the desktop; history stays solo**
+   (unchanged from 2026-09-17).
+6. **Upstream diff shrank**: `LogWatcher.cs` is `partial` plus two lines; `SessionStats.cs`,
+   `MezTracker.cs` and the ledger stores are byte-identical to upstream again;
+   `MainWindow.xaml.cs` keeps five in-place lines at 4,222.
+
+- Claude Code (fork session)

@@ -165,7 +165,7 @@ public class TeammateActorLocalGuardTests
     public void R2_TeammateLootCraftFashionDestroyedAndNamedVendorSalesDoNotWriteYourQuestLedger()
     {
         // The highest-priority finding: QuestStore is a DURABLE on-disk ledger keyed by
-        // the watched character's own identity. TeammateLogTail's constructor never
+        // the watched character's own identity. DerivedTeammates never
         // attaches ANY store to the teammate's instance (see its class doc's
         // invariant) — so a teammate looting, crafting, fashioning, destroying or
         // selling their OWN items has no QuestStore reference to write through at all,
@@ -180,7 +180,7 @@ public class TeammateActorLocalGuardTests
             };
             var key = mine.LedgerCharacterKey;
 
-            // The teammate's own instance — built exactly like TeammateLogTail builds
+            // The teammate's own instance — built exactly like DerivedTeammates builds
             // one, with NO QuestStore attached — applies every line unconditionally
             // (Step 3: no gate, no flag).
             ApplyAsMate(
