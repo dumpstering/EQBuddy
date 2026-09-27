@@ -104,7 +104,7 @@ public static partial class CompanionProjection
         var grand = Math.Max(1, stats.Sum(d => d.Total));
         var built = HistoryPresentation.BuildBreakdownRows(stats, seconds, rateLabel, MaxRows);
         return [.. built.Select((r, i) => new CompanionAbilityRow(
-            r.Name, r.Value, r.Fraction, 100.0 * stats[i].Total / grand, stats[i].Total, stats[i].Hits))];
+            DuoStats.DisplayActorTag(r.Name), r.Value, r.Fraction, 100.0 * stats[i].Total / grand, stats[i].Total, stats[i].Hits))];
     }
 
     private static CompanionLootSection BuildLoot(StatsSnapshot? s)
