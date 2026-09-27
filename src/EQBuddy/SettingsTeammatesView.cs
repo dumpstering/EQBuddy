@@ -106,7 +106,8 @@ internal sealed class SettingsTeammatesView
     private void BuildNameRows()
     {
         _names.Children.Clear();
-        var saved = _main.Settings.TeammateNames;
+        // A hand-edited settings.json can carry "TeammateNames": null.
+        var saved = _main.Settings.TeammateNames ??= [];
         _names.Children.Add(Dim(TeammatesPresentation.ManualHeading(saved.Count)));
         foreach (var name in saved.ToList())
         {
@@ -133,13 +134,13 @@ internal sealed class SettingsTeammatesView
     {
         if (!TeammatesPresentation.TryNormalizeName(_input.Text, _main._watcher.CurrentPath is { } p
                 ? CharacterLog.FromPath(p)?.Character : null,
-                _main.Settings.TeammateNames, out var name, out var refusal))
+                _main.Settings.TeammateNames ?? [], out var name, out var refusal))
         {
             _refusal.Text = refusal ?? "";
             _refusal.Visibility = Visibility.Visible;
             return;
         }
-        _main.Settings.TeammateNames.Add(name);
+        (_main.Settings.TeammateNames ??= []).Add(name);
         _input.Text = "";
         Apply();
     }

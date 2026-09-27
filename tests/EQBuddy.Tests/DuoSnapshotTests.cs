@@ -233,6 +233,29 @@ public class DuoSnapshotTests
         Assert.Equal(7, duo.Combined().DamageDealt);
     }
 
+    /// <summary>What MainWindow's "Reset session" does: the primary's Reset plus the
+    /// teammates' ResetSession. Nothing of the old session survives on either side, and
+    /// the roster does — the group did not change.</summary>
+    [Fact]
+    public void AManualSessionResetEndsTheTeammatesSessionToo()
+    {
+        var duo = new OwnLogDuo()
+            .Feed(T, "Garg has joined the group.")
+            .Feed(T.AddSeconds(1), "Garg slashes a gnoll for 500 points of damage.")
+            .Feed(T.AddSeconds(2), "Garg has been slain by a gnoll!");
+
+        duo.Primary.Reset();
+        duo.Teammates.ResetSession();
+        duo.Feed(T.AddSeconds(30), "A gnoll has been slain by a gnoll warrior!")
+           .Feed(T.AddSeconds(31), "Garg slashes a gnoll for 3 points of damage.");
+
+        var combined = duo.Combined();
+        Assert.Equal(3, combined.DamageDealt);
+        Assert.Equal(1, combined.PartyKillCount);   // the new session's real party kill survives
+        Assert.Equal(combined.PartyKillCount, combined.PartyKillsByKiller.Sum(nc => nc.Count));
+        Assert.Contains("Garg", duo.Teammates.AutoDetected);
+    }
+
     [Fact]
     public void ArchivesStaySoloWhileTheDisplayCombines()
     {

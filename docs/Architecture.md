@@ -457,8 +457,8 @@ The fork derives them:
   reflection). The production instance is `SessionStats.Teammates`, owned by the watched
   character's own session. `LogWatcher`'s poll hands it every line, with the event the
   primary just applied (`_stats.Teammates.ObservePrimaryLine(ts, msg, evt)`), on the poll
-  thread under the watcher lock; `Select` resets it; the primary's own rollover resets the
-  teammates' sessions (the roster is kept — group lines do not repeat after a quiet hour).
+  thread under the watcher lock; `Select` resets it; the primary's own rollover, and the
+  manual "Reset session", reset the teammates' sessions (the roster is kept — group lines do not repeat after a quiet hour).
   That is the entire `LogWatcher.cs` diff: `partial` and two lines. A fault while deriving
   a teammate is logged once and never abandons the poll chunk.
 - **Manual names mid-session** — `LogWatcher.RederiveTeammatesAsync` (`LogWatcher.Duo.cs`)

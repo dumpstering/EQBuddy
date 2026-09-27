@@ -58,7 +58,7 @@ public sealed partial class LogWatcher
                     }
                 }
             }
-            catch (IOException ex)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 // The log is busy or gone: the teammates restart from the next line the
                 // poll reads, which is what a fresh session would do anyway.

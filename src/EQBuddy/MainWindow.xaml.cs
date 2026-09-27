@@ -4187,7 +4187,7 @@ public partial class MainWindow : Window, ICardContext, IZoneHost
             {
                 if (EqConfig.SplitLog(path) is { } dest) AnnounceArchive(dest);
             });
-        _stats.Reset();
+        _stats.Reset(); _stats.Teammates.ResetSession();   // the derived teammates' session ends with yours
     }
 
     private void OnClose(object sender, RoutedEventArgs e) => Close();
