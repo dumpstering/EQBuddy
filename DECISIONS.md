@@ -448,6 +448,6 @@ default it could have gone the other way on:
    (unchanged from 2026-09-17).
 6. **Upstream diff shrank**: `LogWatcher.cs` is `partial` plus two lines; `SessionStats.cs`,
    `MezTracker.cs` and the ledger stores are byte-identical to upstream again;
-   `MainWindow.xaml.cs` keeps five in-place lines at 4,222.
+   `MainWindow.xaml.cs` keeps six in-place lines at 4,222.
 
 - Claude Code (fork session)
