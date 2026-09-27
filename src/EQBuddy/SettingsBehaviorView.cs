@@ -251,6 +251,7 @@ internal sealed class SettingsBehaviorView
         panel.Children.Add(BuildHotkeys());
         panel.Children.Add(BuildRegenOverride());
         panel.Children.Add(BuildLogHousekeeping());
+        panel.Children.Add(new SettingsTeammatesView(_main, _resource).Block);
         panel.Children.Add(BuildDataGroup());
 
         _tutorial = Check("Show quick tutorial at launch", _vm.ShowTutorial,

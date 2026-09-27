@@ -78,6 +78,10 @@ public class SettingsProsePass2Tests
         (Behavior, "AutoEmptyBlurb", "HintRow(_truncate, AutoEmptyBlurb"),
         (Behavior, "ArchiveBlurb", "HintRow(_archive, ArchiveBlurb"),
         (Behavior, "PerfReadoutBlurb", "HintRow(_perfStats, PerfReadoutBlurb"),
+        // Fork (own-log teammates): the Teammates row is its own class, like the telemetry
+        // row, and hangs on its HEADING like HotkeysBlurb — the name rows under it are
+        // rebuilt on every add or remove.
+        ("SettingsTeammatesView.cs", "TeammatesBlurb", "HintRow(heading, Hint(TeammatesBlurb)"),
     ];
 
     public static TheoryData<string, string, string> MovedRows()
