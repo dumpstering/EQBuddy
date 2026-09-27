@@ -358,6 +358,18 @@ public sealed class DerivedTeammates
         lock (_gate) return new Dictionary<string, SessionStats>(_stats, StringComparer.OrdinalIgnoreCase);
     }
 
+    /// <summary>Every known teammate's own snapshot, name-sorted (the same order
+    /// <see cref="CaptureForCombine"/> reads), using the SAME recent window and rules the
+    /// caller's own display snapshot used — for <see cref="SessionStats.PerPersonDps"/>.
+    /// Each teammate's own isolated instance; never combined, never summed.</summary>
+    public IReadOnlyList<(string Name, StatsSnapshot Snapshot)> SnapshotsFor(
+        TimeSpan? recentWindow, IReadOnlyList<TrackedRule>? rules)
+    {
+        lock (_gate)
+            return _stats.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(kv => (kv.Key, kv.Value.Snapshot(recentWindow, rules))).ToList();
+    }
+
     /// <summary>The killers the primary's log named for <paramref name="name"/>'s deaths
     /// this primary session. A disconnected copy; empty, never null.</summary>
     public IReadOnlyDictionary<string, int> DeathKillersFor(string name)

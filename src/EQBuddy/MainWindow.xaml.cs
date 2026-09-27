@@ -2438,15 +2438,15 @@ public partial class MainWindow : Window, ICardContext, IZoneHost
             ? $"session {(int)s.Elapsed.TotalHours}:{s.Elapsed.Minutes:D2} · active {(int)active.TotalMinutes}m (since {start:h:mm tt})"
             : "waiting for log activity…";
 
-        CombatHeader.Text = s.CurrentDps > 0
-            ? $"{s.SessionDps:0} dps (now {s.CurrentDps:0})"
-            : $"{s.SessionDps:0} dps";
         // KPI strip (2026-08-11): the headline numbers, always painted — current DPS
-        // while fighting, session DPS between fights.
+        // while fighting, session DPS between fights. Per-person duo row lives below it.
+        CombatHeader.Text = s.CurrentDps > 0 ? $"{s.SessionDps:0} dps (now {s.CurrentDps:0})" : $"{s.SessionDps:0} dps";
         KpiDps.Text = s.CurrentDps > 0 ? $"{s.CurrentDps:0}" : $"{s.SessionDps:0}";
         KpiKills.Text = $"{s.YourKillCount}";
         KpiLoot.Text = $"{s.LootTotal}";
         KpiXp.Text = $"{s.XpPerHour:0.#}%";
+        DuoDpsPanel.Visibility = EqCardRows.FillVisible(DuoDpsList, PerPersonDpsPresentation.Rows(
+            _stats.PerPersonDps(TimeSpan.FromMinutes(Math.Max(1, _settings.RecentWindowMinutes)), _settings.TrackedRules)));
         // The KILLS & DROPS launcher's one line. It replaced a card header that said
         // only "12 (+3)", so it CARRIES that and adds the rate and the creature count -
         // a fold gets to choose which numbers survive, it does not get to lose one

@@ -31,6 +31,17 @@ internal static class EqCardRows
     /// <param name="onNameClick">Click per row, or null — same reasoning. This pair is what
     /// <c>MainWindow.FillList</c> had and this did not, and it is the whole reason the
     /// Progress, Combat and Healing bodies could not move onto this routine.</param>
+    /// <summary>Fills <paramref name="list"/> and answers the <see cref="Visibility"/> a
+    /// panel wrapped around it should take — Collapsed on an empty set, so a caller whose
+    /// whole panel exists only to show these rows (the per-person duo readout; #none-yet)
+    /// does not carry that same count check itself.</summary>
+    public static Visibility FillVisible(ItemsControl list, IReadOnlyCollection<CardRow> rows,
+        ICardContext? context = null)
+    {
+        Fill(list, rows, context);
+        return rows.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     public static void Fill(ItemsControl list, IEnumerable<CardRow> rows,
         ICardContext? context = null,
         Func<string, string?>? tooltip = null,

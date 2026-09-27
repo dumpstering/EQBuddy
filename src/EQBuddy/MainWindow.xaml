@@ -311,6 +311,23 @@
                 </UniformGrid>
             </Border>
 
+            <!-- Per-person duo DPS readout: the KPI strip's "dps" tile is the COMBINED
+                 rate, and a duo player asked to also see each of their own — never
+                 summed, each person's own isolated numbers (RESUME.md's own-log-teammates
+                 design). Collapsed entirely with fewer than two people (solo, no
+                 teammates known) so a solo player's widget is unchanged.
+                 UI.Shared.PerPersonDpsPresentation decides the rows; this is just
+                 EqCardRows' usual name-hard-right list, same as the Healing card's
+                 HealerList right below it in the tree. -->
+            <Border x:Name="DuoDpsPanel" Margin="{DynamicResource StackS}" CornerRadius="{DynamicResource CornerPanel}"
+                    BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="1"
+                    Background="{DynamicResource PanelBrush}" Visibility="Collapsed">
+                <StackPanel Margin="{DynamicResource PadKpi}">
+                    <TextBlock Text="dps by player" Style="{StaticResource SectionLabel}" Margin="0"/>
+                    <ItemsControl x:Name="DuoDpsList" Margin="{DynamicResource LeadXxs}"/>
+                </StackPanel>
+            </Border>
+
             <!-- Sections -->
             <ScrollViewer x:Name="SectionScroll" VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled">

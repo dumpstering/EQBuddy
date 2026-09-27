@@ -46,6 +46,29 @@ public sealed partial class SessionStats
             ? TeammateCombine.Combine(this, teammates, recentWindow, rules)
             : Snapshot(recentWindow, rules);
 
+    /// <summary>One person's OWN dps numbers for the per-person duo readout — never a
+    /// combined rate. <see cref="EQBuddy.UI.Shared.PerPersonDpsPresentation"/> turns a list
+    /// of these into the rows the widget draws.</summary>
+    public readonly record struct PersonDps(string Name, double SessionDps, double CurrentDps, long DamageDealt);
+
+    /// <summary>This instance's own row (its plain <see cref="Snapshot(TimeSpan?, IReadOnlyList{TrackedRule}?)"/>
+    /// — the SOLO numbers, not <see cref="DuoSnapshot"/>'s combined one) first, then one
+    /// row per current teammate off THEIR OWN isolated instance, name-sorted. Same window
+    /// and rules as the caller's own display snapshot, so a row never disagrees with what
+    /// fed it. Solo (no teammates known) answers a single-element list.</summary>
+    public IReadOnlyList<PersonDps> PerPersonDps(TimeSpan? recentWindow, IReadOnlyList<TrackedRule>? rules)
+    {
+        var mine = Snapshot(recentWindow, rules);
+        var rows = new List<PersonDps>
+        {
+            new(CharacterName is { Length: > 0 } n ? n : "You", mine.SessionDps, mine.CurrentDps, mine.DamageDealt),
+        };
+        if (Volatile.Read(ref _teammates) is { } teammates)
+            foreach (var (name, snap) in teammates.SnapshotsFor(recentWindow, rules))
+                rows.Add(new PersonDps(name, snap.SessionDps, snap.CurrentDps, snap.DamageDealt));
+        return rows;
+    }
+
     /// <summary>Whether <paramref name="name"/> is this instance's own pet right now —
     /// the same test <c>Apply</c> uses to decide a kill is yours rather than a party
     /// kill.</summary>
