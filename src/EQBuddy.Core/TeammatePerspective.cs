@@ -84,7 +84,7 @@ public static class TeammatePerspective
     // teammate's outgoing heal, a teammate's incoming heal, or both at once).
     private static readonly Regex HealGeneralRx = new(
         @"^(?<healer>.+?) healed (?<target>.+?)(?<hot> over time)? for (?<amount>\d+)(?: \((?<attempted>\d+)\))? hit points(?: by (?<spell>.+?))?\.$",
-        RegexOptions.CultureInvariant);
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private sealed record ShapeSet(
         Regex SubjectMelee,
@@ -107,15 +107,31 @@ public static class TeammatePerspective
     // long log with a fixed roster builds each regex exactly once.
     private static readonly ConcurrentDictionary<string, ShapeSet> ShapeCache = new();
 
+    // The name set and alternation for one roster COLLECTION instance: a caller that
+    // keeps passing the same roster object (DerivedTeammates caches it between the rare
+    // lines that change it) pays for them once, not once per log line.
+    private sealed record RosterNames(string PrimaryName, HashSet<string> Names, string Alternation);
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IReadOnlyCollection<string>, RosterNames> NamesCache = new();
+
+    private static (HashSet<string> Names, string Alternation) NamesFor(IReadOnlyCollection<string> roster, string primaryName)
+    {
+        if (NamesCache.TryGetValue(roster, out var cached) && cached.PrimaryName == primaryName)
+            return (cached.Names, cached.Alternation);
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var n in roster)
+            if (!string.IsNullOrEmpty(n) && !string.Equals(n, primaryName, StringComparison.Ordinal))
+                names.Add(n);
+        var entry = new RosterNames(primaryName, names, BuildAlternation(names));
+        NamesCache.AddOrUpdate(roster, entry);
+        return (entry.Names, entry.Alternation);
+    }
+
     /// <summary>Rewrite one already-timestamp-stripped log message into zero or more
     /// (actor, first-person line) pairs. <paramref name="primaryName"/> is excluded
     /// from <paramref name="roster"/> even if a caller passes it in by mistake.</summary>
     public static IReadOnlyList<TeammateLine> Rewrite(string msg, string primaryName, IReadOnlyCollection<string> roster)
     {
-        var names = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var n in roster)
-            if (!string.IsNullOrEmpty(n) && !string.Equals(n, primaryName, StringComparison.Ordinal))
-                names.Add(n);
+        var (names, alt) = NamesFor(roster, primaryName);
 
         if (names.Count == 0 || !ContainsAnyName(msg, names))
             return [];
@@ -123,16 +139,29 @@ public static class TeammatePerspective
         // Heals name a healer and a target independently, either of which may be a
         // roster member (or "You"/"himself" referring back to one) — checked first
         // because it is the only shape that can yield two lines from one input.
-        var healResults = TryRewriteHeal(msg, primaryName, names);
-        if (healResults.Count > 0) return healResults;
+        if (msg.Contains(" healed ", StringComparison.Ordinal))
+        {
+            var healResults = TryRewriteHeal(msg, primaryName, names);
+            if (healResults.Count > 0) return healResults;
+        }
 
-        var alt = BuildAlternation(names);
+        // Each shape below requires a literal these scans find in one vectorised pass,
+        // so a line skips every regex whose literal it lacks — on a long replay that is
+        // most of them, most of the time.
+        bool Has(string literal) => msg.Contains(literal, StringComparison.Ordinal);
+        var ofDamage = Has(" of damage.");
+        var triesTo = Has(" tries to ");
+        var damageBy = Has(" damage by ");
+        var nonMelee = Has(" non-melee damage");
+        var hasTaken = Has(" has taken ");
+        var slainBy = Has(" has been slain by ");
+
         var shapes = ShapeCache.GetOrAdd(alt, BuildShapes);
         Match m;
 
         // ---- subject forms: the teammate is the one acting ----
 
-        if ((m = shapes.SubjectMelee.Match(msg)).Success)
+        if (ofDamage && (m = shapes.SubjectMelee.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             var verb = m.Groups["verb"].Value;
@@ -140,7 +169,7 @@ public static class TeammatePerspective
             return [new TeammateLine(actor, $"You {first} {m.Groups["rest"].Value}", isPet)];
         }
 
-        if ((m = shapes.SubjectMeleeMiss.Match(msg)).Success)
+        if (triesTo && (m = shapes.SubjectMeleeMiss.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             var reason = m.Groups["reason"].Value;
@@ -150,20 +179,20 @@ public static class TeammatePerspective
             return [new TeammateLine(actor, line, isPet)];
         }
 
-        if ((m = shapes.SubjectSchoolDamage.Match(msg)).Success)
+        if (damageBy && (m = shapes.SubjectSchoolDamage.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             return [new TeammateLine(actor, $"You hit {m.Groups["rest"].Value}", isPet)];
         }
 
-        if ((m = shapes.SubjectDamageShieldDealt.Match(msg)).Success)
+        if (nonMelee && (m = shapes.SubjectDamageShieldDealt.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             var line = $"{m.Groups["target"].Value} is {m.Groups["how"].Value} by YOUR {m.Groups["rest"].Value}";
             return [new TeammateLine(actor, line, isPet)];
         }
 
-        if ((m = shapes.SubjectDotDealt.Match(msg)).Success)
+        if (hasTaken && (m = shapes.SubjectDotDealt.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             var line = $"{m.Groups["target"].Value} has taken {m.Groups["dmg"].Value} damage from " +
@@ -171,7 +200,7 @@ public static class TeammatePerspective
             return [new TeammateLine(actor, line, isPet)];
         }
 
-        if ((m = shapes.SubjectKill.Match(msg)).Success)
+        if (slainBy && (m = shapes.SubjectKill.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             return [new TeammateLine(actor, $"You have slain {m.Groups["target"].Value}!", isPet)];
@@ -182,7 +211,7 @@ public static class TeammatePerspective
         // this is only the *cast-begins* announcement) is not attributable to the
         // owner: upstream never counts the primary's own pet's casts either, so a
         // pet actor here is dropped rather than inflating the owner's _castsStarted.
-        if ((m = shapes.SubjectCast.Match(msg)).Success)
+        if (Has(" begins ") && (m = shapes.SubjectCast.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             if (isPet) return [];
@@ -193,14 +222,14 @@ public static class TeammatePerspective
         // A pet's own death is not observed anywhere in the corpus and is dropped
         // rather than guessed at — see the object-form note below for why a pet
         // actor is refused here rather than folded into the owner.
-        if ((m = shapes.SubjectDeathBy.Match(msg)).Success)
+        if (slainBy && (m = shapes.SubjectDeathBy.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             if (isPet) return [];
             return [new TeammateLine(actor, $"You have been slain by {m.Groups["killer"].Value}!", isPet)];
         }
 
-        if ((m = shapes.SubjectDeathPlain.Match(msg)).Success)
+        if (msg.EndsWith(" died.", StringComparison.Ordinal) && (m = shapes.SubjectDeathPlain.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             if (isPet) return [];
@@ -216,7 +245,7 @@ public static class TeammatePerspective
         // would inflate a teammate's own defensive numbers with their warder's, which
         // nothing upstream does for the primary's pet either (design survey finding).
 
-        if ((m = shapes.ObjectMelee.Match(msg)).Success)
+        if (ofDamage && (m = shapes.ObjectMelee.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             if (isPet) return [];
@@ -229,7 +258,7 @@ public static class TeammatePerspective
         // "YOUR magical skin absorbs the blow!" RuneBlockInRx requires. Every other
         // reason (miss/parry/dodge/block/riposte) is discarded by MeleeInMissRx
         // regardless of its wording, so it is passed through untouched below.
-        if ((m = shapes.ObjectMeleeMissRune.Match(msg)).Success)
+        if (triesTo && (m = shapes.ObjectMeleeMissRune.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             if (isPet) return [];
@@ -238,7 +267,7 @@ public static class TeammatePerspective
             return [new TeammateLine(actor, line, isPet)];
         }
 
-        if ((m = shapes.ObjectMeleeMissGeneric.Match(msg)).Success)
+        if (triesTo && (m = shapes.ObjectMeleeMissGeneric.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             if (isPet) return [];
@@ -247,7 +276,7 @@ public static class TeammatePerspective
             return [new TeammateLine(actor, line, isPet)];
         }
 
-        if ((m = shapes.ObjectSchoolDamage.Match(msg)).Success)
+        if (damageBy && (m = shapes.ObjectSchoolDamage.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             if (isPet) return [];
@@ -255,14 +284,14 @@ public static class TeammatePerspective
             return [new TeammateLine(actor, line, isPet)];
         }
 
-        if ((m = shapes.ObjectDamageShieldTaken.Match(msg)).Success)
+        if (nonMelee && (m = shapes.ObjectDamageShieldTaken.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             if (isPet) return [];
             return [new TeammateLine(actor, $"YOU are {m.Groups["phrase"].Value}!", isPet)];
         }
 
-        if ((m = shapes.ObjectDotTaken.Match(msg)).Success)
+        if (hasTaken && (m = shapes.ObjectDotTaken.Match(msg)).Success)
         {
             var (actor, isPet) = ResolveActor(m.Groups["actor"].Value);
             if (isPet) return [];
@@ -403,7 +432,7 @@ public static class TeammatePerspective
 
     private static ShapeSet BuildShapes(string alt)
     {
-        const RegexOptions Opt = RegexOptions.CultureInvariant;
+        const RegexOptions Opt = RegexOptions.CultureInvariant | RegexOptions.Compiled;
         return new ShapeSet(
             // Garg slashes/hits/… T for N point(s) of damage.(note)
             SubjectMelee: new Regex(

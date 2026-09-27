@@ -110,14 +110,28 @@ public sealed class DerivedTeammates
 
     /// <summary>The production feed: one PRIMARY log line, after the primary applied
     /// <paramref name="primaryEvent"/> (null when the line parsed to nothing). Reads the
-    /// primary's name, pet and pet test before taking this instance's lock.</summary>
+    /// primary's name, pet and pet test before taking this instance's lock.
+    ///
+    /// <b>Never throws.</b> It runs inside the watcher's poll loop, where an exception
+    /// abandons the rest of the chunk — a fault in deriving a teammate must never cost
+    /// the player a line of their OWN stats. The first fault is logged; the line is
+    /// simply not credited to anybody.</summary>
     public void ObservePrimaryLine(DateTime ts, string msg, GameEvent? primaryEvent)
     {
         var primary = _primary ?? throw new InvalidOperationException(
             "ObservePrimaryLine needs the primary-owned instance (SessionStats.Teammates).");
-        var partyKill = primaryEvent is KillEvent k && k.Killer != "You" && !primary.IsMyPet(k.Killer);
-        ObserveCore(ts, msg, primaryEvent, partyKill, primary.CharacterName, primary.LivePetName, ManualNames);
+        try
+        {
+            var partyKill = primaryEvent is KillEvent k && k.Killer != "You" && !primary.IsMyPet(k.Killer);
+            ObserveCore(ts, msg, primaryEvent, partyKill, primary.CharacterName, primary.LivePetName, ManualNames);
+        }
+        catch (Exception ex)
+        {
+            if (Interlocked.Exchange(ref _faultLogged, 1) == 0) CoreLog.Error(ex);
+        }
     }
+
+    private int _faultLogged;
 
     /// <summary>The standalone feed: parses <paramref name="msg"/> itself, the way the
     /// primary would, and uses <paramref name="manualNames"/> as the manual list.</summary>

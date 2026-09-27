@@ -29,7 +29,7 @@ public sealed record CharacterLog(string FilePath, string Character, string Serv
 /// auto-rolls on 60-minute gaps, so only the latest play session survives), then
 /// incremental reads of appended bytes.
 /// </summary>
-public sealed class LogWatcher : IDisposable
+public sealed partial class LogWatcher : IDisposable
 {
     private readonly SessionStats _stats;
     private readonly System.Timers.Timer _timer;
@@ -293,6 +293,7 @@ public sealed class LogWatcher : IDisposable
             InitialIngestDone = false;
             _stats.ClearCharacterState();
             _stats.Reset();
+            _stats.Teammates.Reset();
             // Every Select is a replay starting over; the ledger's boundary-second
             // counters must not carry over from the previous pass (finding 3).
             SpawnPoints?.ReplayStarting();
@@ -411,6 +412,7 @@ public sealed class LogWatcher : IDisposable
                             // Every line, parsed or not: a Text watch rule matches the
                             // line's words, not whatever event we did or didn't make of it.
                             _stats.ObserveRawLine(ts, msg);
+                            _stats.Teammates.ObservePrimaryLine(ts, msg, evt);
                         }
                     }
                     start = nl + 1;

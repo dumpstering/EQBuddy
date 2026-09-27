@@ -93,6 +93,11 @@ public sealed class TeammateRoster
     public void Observe(string msg, string? primaryName)
     {
         if (string.IsNullOrEmpty(msg)) return;
+        // Every shape below names the group or the party, or is a Targeted line — one
+        // vectorised scan skips the regexes on the other ~99.9% of a long replay.
+        if (!msg.Contains("group", StringComparison.Ordinal) && !msg.Contains(" party.", StringComparison.Ordinal)
+            && !msg.StartsWith("Targeted (NPC): ", StringComparison.Ordinal))
+            return;
 
         Match m;
         if ((m = JoinedGroupRx.Match(msg)).Success) _autoDetected.Add(m.Groups["name"].Value);
