@@ -215,19 +215,6 @@ internal sealed class SettingsBehaviorView
         + "yours to keep or clean up; EQBuddy never deletes them. Untick if you would rather "
         + "have the disk space back.";
 
-    /// <summary>What a teammate log adds and what it does not. Hangs on the "Teammate log"
-    /// HEADING, the same shape <see cref="HotkeysBlurb"/> uses — the row underneath is
-    /// rebuilt whenever the path changes, so the heading is the one anchor that survives
-    /// that.</summary>
-    private const string TeammateLogBlurb =
-        "Also read a teammate's log (a synced copy of their eqlog_name_server.txt). Keep it "
-        + "OUTSIDE the game's Logs folder, or EQBuddy will follow it as if it were you. Their "
-        + "kills, damage, healing, loot and money join your duo totals; their casts feed the "
-        + "mez tracker. Their XP is NOT pooled with yours — it's a percentage of a different "
-        + "level bar — and neither is their faction standing, AA, or any other per-character "
-        + "progress; those stay theirs. World lines your own log already shows, and their "
-        + "character state (level, AA, buffs on them), are skipped.";
-
     /// <summary>What the title-bar readout is and why it exists. Hangs on
     /// <c>_perfStats</c>.</summary>
     private const string PerfReadoutBlurb =
@@ -250,7 +237,6 @@ internal sealed class SettingsBehaviorView
     /// either of those would immediately call back into <see cref="MainWindow.SetClickThrough"/>
     /// a second time.</summary>
     private bool _syncingClickThrough;
-    private TextBlock _teammatePathLabel = null!;
 
     private UIElement Build()
     {
@@ -608,32 +594,6 @@ internal sealed class SettingsBehaviorView
             () => { if (Ready) _vm.ArchiveLogs = _archive.IsChecked == true; });
         panel.Children.Add(HintRow(_archive, ArchiveBlurb, new Thickness(20, 6, 0, 0)));
 
-        panel.Children.Add(HintRow(Heading("Teammate log", margin: new Thickness(0)), TeammateLogBlurb,
-            new Thickness(0, 14, 0, 0)));
-        var teammateRow = new StackPanel { Orientation = Orientation.Horizontal };
-        _teammatePathLabel = new TextBlock
-        {
-            Text = TeammateLabel(), FontSize = 12, TextWrapping = TextWrapping.Wrap,
-            VerticalAlignment = VerticalAlignment.Center, MaxWidth = 220,
-            Style = (Style)_resource("Dim"),
-        };
-        teammateRow.Children.Add(_teammatePathLabel);
-        var teammateChoose = new Button
-        {
-            Content = "Choose file…", Style = (Style)_resource("ActionButton"),
-            Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(8, 3, 8, 3),
-        };
-        teammateChoose.Click += (_, _) => OnChooseTeammateLog();
-        teammateRow.Children.Add(teammateChoose);
-        var teammateClear = new Button
-        {
-            Content = "Clear", Style = (Style)_resource("ActionButton"),
-            Margin = new Thickness(6, 0, 0, 0), Padding = new Thickness(8, 3, 8, 3),
-        };
-        teammateClear.Click += (_, _) => OnClearTeammateLog();
-        teammateRow.Children.Add(teammateClear);
-        panel.Children.Add(teammateRow);
-
         return panel;
     }
 
@@ -710,51 +670,6 @@ internal sealed class SettingsBehaviorView
     internal void SyncReviewState()
     {
         if (_block is not null) PaintReviewLogButton();
-    }
-
-    private string TeammateLabel() =>
-        _main.Settings.TeammateLogPath is { Length: > 0 } path ? path : "(none)";
-
-    private void OnChooseTeammateLog()
-    {
-        var dlg = new Microsoft.Win32.OpenFileDialog
-        {
-            Filter = "EQ logs (eqlog_*.txt)|eqlog_*.txt|All files (*.*)|*.*",
-        };
-        // Owned, like GearCardView's ImportList — an always-on-top widget can otherwise
-        // leave the dialog landing behind it.
-        var owner = Window.GetWindow(_teammatePathLabel);
-        if ((owner is not null ? dlg.ShowDialog(owner) : dlg.ShowDialog()) != true) return;
-        // Finding 4: the blurb above promises the file will be refused when it can
-        // hijack the watched character's identity — TeammateLogPicker.Validate is the
-        // pure, testable rule that promise leans on (see its own doc for why). A
-        // refusal is shown, never a silent no-op, per this repo's own rule.
-        if (TeammateLogPicker.Validate(dlg.FileName, _main._watcher.CurrentPath, _main.Settings.LogFolder)
-            is { } reason)
-        {
-            if (owner is not null) MessageBox.Show(owner, reason, "Teammate log");
-            else MessageBox.Show(reason, "Teammate log");
-            return;
-        }
-        _main._watcher.SelectTeammate(dlg.FileName);
-        if (_main._watcher.TeammatePath != dlg.FileName)
-        {
-            var message = _main._watcher.LastError?.Message ?? "The teammate selection changed. Please choose the file again.";
-            if (owner is not null) MessageBox.Show(owner, message, "Teammate log");
-            else MessageBox.Show(message, "Teammate log");
-            return;
-        }
-        _main.Settings.TeammateLogPath = dlg.FileName;
-        _main.Settings.Save();
-        _teammatePathLabel.Text = TeammateLabel();
-    }
-
-    private void OnClearTeammateLog()
-    {
-        _main.Settings.TeammateLogPath = null;
-        _main.Settings.Save();
-        _main._watcher.SelectTeammate(null);
-        _teammatePathLabel.Text = TeammateLabel();
     }
 
     // ================================================================== plumbing ====

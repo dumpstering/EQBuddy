@@ -221,11 +221,6 @@ public static class DuoStats
             HealsByHealer = combinedHealsByHealer,
             DamageTimeline = combinedDamageTimeline,
             Effort = combinedEffort,
-            // The escape hatch (plan Part 2c): every side-by-side teammate number
-            // (their XP%, their level, their deaths) reads through here instead of
-            // getting its own dedicated field. [JsonIgnore]'d on StatsSnapshot itself —
-            // a teammate's session is never archived or wired to Mobile.
-            Mate = mate,
 
             // ---- STAYS MINE ----
             LastLocation = mine.LastLocation,
@@ -317,178 +312,6 @@ public static class DuoStats
         };
     }
 
-    /// <summary>
-    /// Repair round C1: a DEDICATED fold for the SAME actor across two time
-    /// segments — the companion's own pre-rollover carry and its just-ended (or
-    /// just-live) segment — kept entirely separate from <see cref="Combine"/>,
-    /// which is for two DIFFERENT people. The bug this replaces called
-    /// <c>Combine</c> recursively on the carry: every pass tags whatever came in as
-    /// "mate" with an actor label, so an ended segment already tagged once by an
-    /// earlier fold got tagged AGAIN by the next one — one teammate's own "Kick"
-    /// rows came out as <c>Kick␀Buddy</c> from the live segment and
-    /// <c>Kick␀teammate␀Buddy</c> from the folded-twice historical one, as if two
-    /// different people had kicked.
-    ///
-    /// Three things a same-actor fold must do differently from a two-actor combine:
-    ///  - Ability/spell/hit-type rows AGGREGATE BY NAME (the same actor really did
-    ///    do all of it), never tag — <see cref="MergeSourceDamageByName"/> and
-    ///    <see cref="MergeCounts"/> are the exact "sum by matching key" primitives
-    ///    <see cref="Combine"/> already uses for the person-keyed rows, reused here
-    ///    because that operation IS what a same-actor fold needs everywhere.
-    ///  - <see cref="StatsSnapshot.CombatSeconds"/> is SUMMED, not unioned or
-    ///    maxed: <paramref name="carry"/> and <paramref name="ended"/> are
-    ///    sequential by construction — the ended segment finished entirely before
-    ///    the internal gap-roll that started the fresh one — so they cannot
-    ///    overlap, and no live span data survives a companion's own reset for a
-    ///    real union to read anyway.
-    ///  - <see cref="StatsSnapshot.Effort"/> is CLEARED (<see cref="RecentEffort.None"/>),
-    ///    not summed: it is a ~30-SECOND ROLLING WINDOW anchored on a log
-    ///    timestamp, not a running total, so adding an ENDED segment's window to a
-    ///    live one let an hour-old rollover's burst decide whether today's
-    ///    collapsed HUD shows damage or healing. When live is true, retain only
-    ///    the newer live segment's CurrentDps, Recent and Effort instead.
-    ///
-    /// <paramref name="ended"/> — the chronologically NEWER segment — supplies
-    /// every "current state" field (XP%, zone, stance, faction, and so on): those
-    /// describe where the actor IS right now, and <paramref name="carry"/>'s copy
-    /// of them is, by definition, stale the moment a rollover has happened.
-    /// <paramref name="carry"/> null (nothing has rolled over yet) returns
-    /// <paramref name="ended"/> unchanged — the common case costs nothing.
-    /// </summary>
-    internal static StatsSnapshot CombineSameActorCarry(StatsSnapshot? carry, StatsSnapshot ended, bool live = false)
-    {
-        if (carry is null) return ended;
-
-        var combinedCombatSeconds = carry.CombatSeconds + ended.CombatSeconds;
-        var combinedDamage = carry.DamageDealt + ended.DamageDealt;
-        var combinedHealing = carry.HealingDone + ended.HealingDone;
-        var combinedCopper = carry.Copper + ended.Copper;
-        var combinedRecentLoot = carry.RecentLoot.Concat(ended.RecentLoot)
-            .OrderByDescending(l => l.Time).Take(MaxRecentLoot).ToList();
-
-        return new StatsSnapshot
-        {
-            // ---- ADDITIVE: the same actor's running totals across both segments ----
-            Version = ended.Version,
-            YourKillCount = carry.YourKillCount + ended.YourKillCount,
-            YourKills = MergeCounts(carry.YourKills, ended.YourKills),
-            DamageDealt = combinedDamage,
-            MeleeDamage = carry.MeleeDamage + ended.MeleeDamage,
-            SpellDamage = carry.SpellDamage + ended.SpellDamage,
-            DotDamage = carry.DotDamage + ended.DotDamage,
-            DirectSpellDamage = carry.DirectSpellDamage + ended.DirectSpellDamage,
-            HitCount = carry.HitCount + ended.HitCount,
-            CritCount = carry.CritCount + ended.CritCount,
-            MissCount = carry.MissCount + ended.MissCount,
-            MaxHit = Math.Max(carry.MaxHit, ended.MaxHit),
-            MaxHitDesc = ended.MaxHit > carry.MaxHit ? ended.MaxHitDesc : carry.MaxHitDesc,
-            // Repair round C1: SUM, not union/max — see this method's own doc.
-            CombatSeconds = combinedCombatSeconds,
-            SessionDps = combinedCombatSeconds > 0 ? combinedDamage / combinedCombatSeconds : 0,
-            // Historical folds have no current activity; a live fold keeps only the newer segment's.
-            CurrentDps = live ? ended.CurrentDps : 0,
-            DamageTaken = carry.DamageTaken + ended.DamageTaken,
-            AvoidedIncoming = carry.AvoidedIncoming + ended.AvoidedIncoming,
-            MeleeHitsTaken = carry.MeleeHitsTaken + ended.MeleeHitsTaken,
-            HealingDone = combinedHealing,
-            HealingReceived = carry.HealingReceived + ended.HealingReceived,
-            Hps = combinedCombatSeconds > 0 ? combinedHealing / combinedCombatSeconds : 0,
-            LootTotal = carry.LootTotal + ended.LootTotal,
-            Loot = MergeLoot(carry.Loot, ended.Loot, combinedRecentLoot),
-            RecentLoot = combinedRecentLoot,
-            Copper = combinedCopper,
-            CorpseCopper = carry.CorpseCopper + ended.CorpseCopper,
-            VendorCopper = carry.VendorCopper + ended.VendorCopper,
-            SalesCount = carry.SalesCount + ended.SalesCount,
-            SoldItems = MergeSold(carry.SoldItems, ended.SoldItems),
-            CoinDrops = carry.CoinDrops + ended.CoinDrops,
-            BiggestDrop = Math.Max(carry.BiggestDrop, ended.BiggestDrop),
-            RegenTicks = carry.RegenTicks + ended.RegenTicks,
-            RegenEstimatedHealed = carry.RegenEstimatedHealed + ended.RegenEstimatedHealed,
-            RuneGainCount = carry.RuneGainCount + ended.RuneGainCount,
-            RuneGainPoints = carry.RuneGainPoints + ended.RuneGainPoints,
-            RuneBlockCount = carry.RuneBlockCount + ended.RuneBlockCount,
-            RuneBlockStreakMax = Math.Max(carry.RuneBlockStreakMax, ended.RuneBlockStreakMax),
-            Crafted = MergeCounts(carry.Crafted, ended.Crafted),
-            CraftedTotal = carry.CraftedTotal + ended.CraftedTotal,
-            Fashioned = MergeCounts(carry.Fashioned, ended.Fashioned),
-            FashionedTotal = carry.FashionedTotal + ended.FashionedTotal,
-            Upgraded = MergeCounts(carry.Upgraded, ended.Upgraded),
-            XpTicks = carry.XpTicks + ended.XpTicks,
-            AaGained = carry.AaGained + ended.AaGained,
-            SkillUpTotal = carry.SkillUpTotal + ended.SkillUpTotal,
-            Fizzles = carry.Fizzles + ended.Fizzles,
-            Resists = carry.Resists + ended.Resists,
-            Blocked = carry.Blocked + ended.Blocked,
-            CastsStarted = carry.CastsStarted + ended.CastsStarted,
-            CastsInterrupted = carry.CastsInterrupted + ended.CastsInterrupted,
-            ActiveSeconds = carry.ActiveSeconds + ended.ActiveSeconds,
-            AaTotal = Math.Max(carry.AaTotal, ended.AaTotal),
-            // Repair round C1: aggregated BY NAME — the same actor, never tagged.
-            DamageBySource = MergeSourceDamageByName(carry.DamageBySource, ended.DamageBySource),
-            PetAbilities = MergeSourceDamageByName(carry.PetAbilities, ended.PetAbilities),
-            HealsBySpell = MergeSourceDamageByName(carry.HealsBySpell, ended.HealsBySpell),
-            SpecialHits = MergeCounts(carry.SpecialHits, ended.SpecialHits),
-            DamageByAttacker = MergeSourceDamageByName(carry.DamageByAttacker, ended.DamageByAttacker),
-            HealsByHealer = MergeSourceDamageByName(carry.HealsByHealer, ended.HealsByHealer),
-            DamageTimeline = MergeTimeline(carry.DamageTimeline, ended.DamageTimeline),
-
-            // ---- NOT MEANINGFUL for a folded carry — recomputed or cleared ----
-            KillsPerHour = 0,
-            KillsPerActiveHour = 0,
-            CopperPerHour = 0,
-            CopperPerActiveHour = 0,
-            XpPerHour = 0,
-            XpPerActiveHour = 0,
-            HoursToLevel = null,
-            Recent = live ? ended.Recent : null,
-            // Repair round C1: cleared, not summed — see this method's own doc.
-            Effort = live ? ended.Effort : RecentEffort.None,
-
-            // ---- CURRENT STATE: the newer segment's own, never the stale carry's ----
-            LastLocation = ended.LastLocation,
-            LocationTrail = ended.LocationTrail,
-            SessionStart = ended.SessionStart,
-            LastEventTime = ended.LastEventTime,
-            Elapsed = ended.Elapsed,
-            PetName = ended.PetName,
-            CharmedSince = ended.CharmedSince,
-            CurrentTargets = ended.CurrentTargets,
-            XpPercent = ended.XpPercent,
-            AaAbilities = ended.AaAbilities,
-            Levels = ended.Levels,
-            LastLevel = ended.LastLevel,
-            LastLevelAt = ended.LastLevelAt,
-            SkillUps = ended.SkillUps,
-            Faction = ended.Faction,
-            Zones = ended.Zones,
-            CurrentZone = ended.CurrentZone,
-            CurrentStance = ended.CurrentStance,
-            Stances = ended.Stances,
-            CurrentInvocation = ended.CurrentInvocation,
-            Invocations = ended.Invocations,
-            AreaSpells = ended.AreaSpells,
-            Procs = ended.Procs,
-            SpellResists = ended.SpellResists,
-            InferredClass = ended.InferredClass,
-            InferredClasses = ended.InferredClasses,
-            Deaths = ended.Deaths,
-            Markers = ended.Markers,
-            LastFight = ended.LastFight,
-            RecentEncounters = ended.RecentEncounters,
-            Encounters = ended.Encounters,
-            EncounterCount = ended.EncounterCount,
-            Mobs = ended.Mobs,
-            Tracked = ended.Tracked,
-
-            // ---- Unused downstream (the real combine never reads a mate's copy of
-            // these — see DuoSnapshot/Combine), kept simple rather than re-derived ----
-            PartyKillCount = ended.PartyKillCount,
-            PartyKillsByTarget = ended.PartyKillsByTarget,
-            PartyKillsByKiller = ended.PartyKillsByKiller,
-        };
-    }
-
     private static List<NameCount> MergeCounts(List<NameCount> a, List<NameCount> b)
     {
         var merged = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -497,15 +320,6 @@ public static class DuoStats
         return [.. merged.Select(kv => new NameCount(kv.Key, kv.Value)).OrderByDescending(nc => nc.Count)];
     }
 
-    /// <summary><paramref name="recentLoot"/> (repair round A6) is the combined,
-    /// newest-first pickup list — real chronology, unlike the aggregated
-    /// <see cref="LootDetail"/> rows this merges, which carry a source but no
-    /// timestamp. The old "last writer wins" left <c>b</c> (mate) as LastSource for
-    /// every item BOTH players looted, since mate is always folded in second,
-    /// regardless of which pickup actually happened later. An item outside the
-    /// recent-loot cap (250, very rare for LastSource specifically — it would take
-    /// 250 MORE recent pickups of anything else after it) falls back to the old
-    /// last-writer rule rather than losing a source entirely.</summary>
     /// <summary>Repair round C5: the provenance tag lives after a RESERVED marker
     /// character, not encoded as free-text parentheses into <c>Name</c> — the old
     /// <c>"{Name} ({actor})"</c> scheme collided with any REAL row genuinely called
@@ -600,6 +414,15 @@ public static class DuoStats
         return [.. merged.Select(kv => new TimelinePoint(kv.Key, kv.Value)).OrderBy(p => p.Time)];
     }
 
+    /// <summary><paramref name="recentLoot"/> (repair round A6) is the combined,
+    /// newest-first pickup list — real chronology, unlike the aggregated
+    /// <see cref="LootDetail"/> rows this merges, which carry a source but no
+    /// timestamp. The old "last writer wins" left <c>b</c> (mate) as LastSource for
+    /// every item BOTH players looted, since mate is always folded in second,
+    /// regardless of which pickup actually happened later. An item outside the
+    /// recent-loot cap (250, very rare for LastSource specifically — it would take
+    /// 250 MORE recent pickups of anything else after it) falls back to the old
+    /// last-writer rule rather than losing a source entirely.</summary>
     private static List<LootDetail> MergeLoot(List<LootDetail> a, List<LootDetail> b, List<LootPickup> recentLoot)
     {
         var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);

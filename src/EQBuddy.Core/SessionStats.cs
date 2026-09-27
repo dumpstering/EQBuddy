@@ -524,7 +524,6 @@ public sealed partial class SessionStats
             if (_lastEventTime is { } last && e.Time - last >= SessionGap)
             {
                 finalSnapshot = BuildSnapshotLocked(null, null);
-                CaptureDuoCombatBeforeReset(finalSnapshot);
                 ResetLocked();
                 rolled = true;
             }
@@ -2380,8 +2379,6 @@ public sealed class StatsSnapshot
     /// (<see cref="ClassInference.CurrentClasses"/>). Empty for "don't know".</summary>
     public IReadOnlyList<string> InferredClasses { get; init; } = [];
 
-    // Teammate's own snapshot (Step 4/DuoStats) — null solo; never archived or sent to Mobile.
-    [System.Text.Json.Serialization.JsonIgnore] public StatsSnapshot? Mate { get; init; }
     /// <summary>Format copper as "3p 2g 4s 7c".</summary>
     public static string FormatCoin(long copper)
     {

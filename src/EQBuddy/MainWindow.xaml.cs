@@ -220,7 +220,7 @@ public partial class MainWindow : Window, ICardContext, IZoneHost
             OutputfileAutoImport.KindOf(fileName) == OutputfileKind.Inventory
                 ? InventoryFile.FindLatest(_settings.LogFolder, Identity.Character)
                 : null;
-        _watcher = new LogWatcher(_stats); _watcher.LogFolder = () => _settings.LogFolder;
+        _watcher = new LogWatcher(_stats);
         _watcher.Mez = _mezTracker;
         _watcher.Slow = _slowTracker;
         _slowTracker.Landed += OnSlowLanded;
@@ -381,7 +381,7 @@ public partial class MainWindow : Window, ICardContext, IZoneHost
 
         if (_settings.LogFolder is { } saved && !System.IO.Directory.Exists(saved))
             _settings.LogFolder = null; // stale saved path (game moved) — re-detect
-        _settings.LogFolder ??= LogWatcher.FindDefaultLogFolder(); _watcher.SelectTeammate(_settings.TeammateLogPath);
+        _settings.LogFolder ??= LogWatcher.FindDefaultLogFolder();
         // A saved spot on a monitor that's gone (undocked, TV unplugged) would put the
         // widget in the void — and settings.json survives reinstalls, so it stays there.
         _restoredSavedPosition = ScreenGuard.OnScreen(_settings.WindowLeft, _settings.WindowTop, Width, Height);
@@ -610,9 +610,9 @@ public partial class MainWindow : Window, ICardContext, IZoneHost
     /// costing a full rebuild every 50 ms as well as being wrong.
     /// </summary>
     private StatsSnapshot BuildSnapshot() =>
-        _stats.DuoSnapshot(
-            TimeSpan.FromMinutes(Math.Max(1, _settings.RecentWindowMinutes)),
+        _stats.DuoSnapshot(TimeSpan.FromMinutes(Math.Max(1, _settings.RecentWindowMinutes)),
             _settings.TrackedRules);
+
     // For the EQBUDDY_EXPAND dump: how many times the pump ran, and how many of those
     // did any work. E2E asserts the second is zero while no device is paired — the
     // "free when idle" claim is the one that costs a core if it's wrong, and a unit
@@ -2121,15 +2121,15 @@ public partial class MainWindow : Window, ICardContext, IZoneHost
             System.IO.Directory.Exists(logsSub))
             picked = logsSub;
 
-        ApplyLogFolder(picked);
+        _settings.LogFolder = picked;
+        _settings.Save();
+        _lastCharScan = DateTime.MinValue;
+        FollowActiveCharacter();
     }
 
-    internal void OnAutoDetectLogFolder(object sender, RoutedEventArgs e) =>
-        ApplyLogFolder(LogWatcher.FindDefaultLogFolder());
-
-    private void ApplyLogFolder(string? folder)
+    internal void OnAutoDetectLogFolder(object sender, RoutedEventArgs e)
     {
-        _settings.LogFolder = folder;
+        _settings.LogFolder = LogWatcher.FindDefaultLogFolder();
         _settings.Save();
         _lastCharScan = DateTime.MinValue;
         FollowActiveCharacter();
@@ -2252,7 +2252,7 @@ public partial class MainWindow : Window, ICardContext, IZoneHost
     /// <summary>Switch to whoever is actively playing: the most recently written log.</summary>
     private void FollowActiveCharacter()
     {
-        if (_reviewPath is not null) return; if (_settings.TeammateLogPath is not null && _watcher.TeammatePath is null) { _settings.TeammateLogPath = null; _settings.Save(); }   // R3: reviewing an archive stays put (#74); the watcher may have refused/cleared a stale teammate path
+        if (_reviewPath is not null) return;   // reviewing an archive — stay put (#74)
         if (_settings.LogFolder is null)
         {
             CharLabel.Text = "logs not found — right-click, Choose log folder";
@@ -2418,8 +2418,8 @@ public partial class MainWindow : Window, ICardContext, IZoneHost
         // This call remains the reconciliation one: it is what keeps ForcedPushInterval
         // running through a camp so quiet that nothing bumps the version at all. Record
         // the version it covered, so the pump doesn't immediately repeat this push.
-        var mobile = BuildSnapshot(); _companionGate.Observe(mobile.Version);
-        _companion.Tick(mobile, _spawnTimers, _stats.CharacterName ?? "", DateTime.Now);
+        _companionGate.Observe(s.Version);
+        _companion.Tick(s, _spawnTimers, _stats.CharacterName ?? "", DateTime.Now);
 
         // Hidden while the game is unfocused: everything the player can't see stops
         // here — alerts, chips, timers, and checkpoints above already ran (perf
@@ -3306,6 +3306,7 @@ public partial class MainWindow : Window, ICardContext, IZoneHost
         DateTime? lastActivity = _watcher.LastGrowth;
         if (lastActivity is null && _watcher.CurrentPath is { } p && File.Exists(p))
             lastActivity = File.GetLastWriteTime(p);
+
         var age = lastActivity is { } t ? DateTime.Now - t : TimeSpan.MaxValue;
         var brush = age < TimeSpan.FromSeconds(30) ? (Brush)FindResource("GoodBrush")
             : age < TimeSpan.FromMinutes(2) ? (Brush)FindResource("WarnBrush")
@@ -3316,7 +3317,6 @@ public partial class MainWindow : Window, ICardContext, IZoneHost
         StatusDot.Fill = brush; StatusDot.ToolTip = tip;
         MiniDot.Fill = brush; MiniDot.ToolTip = tip;
         LogBanner.Visibility = age > TimeSpan.FromMinutes(2) ? Visibility.Visible : Visibility.Collapsed;
-        TeammateStatusView.Refresh(TeammateWarning, StatusDot, MiniDot, _stats);
     }
 
     private IEnumerable<(string Key, System.Windows.Controls.Primitives.ToggleButton Star)> StarButtons()

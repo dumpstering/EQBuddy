@@ -1,265 +1,34 @@
 namespace EQBuddy.Core;
 
 /// <summary>
-/// Display-only combination of two isolated sessions. The watcher serializes its
-/// mutations with DuoSync; snapshot readers acquire it before either stats lock.
-/// SessionStats.cs spends one of its three added lines capturing a companion's
-/// combat spans before an inactivity reset. No durable resource is attached.
+/// The duo half of <see cref="SessionStats"/>: the combined, display-only snapshot a
+/// widget or phone shows while grouped. It lives in its own file, outside the
+/// <c>SessionStats*.cs</c> ratchet glob, and costs SessionStats.cs no line at all —
+/// the class is <c>sealed partial</c>, so this file reaches the private fields it reads
+/// directly.
 /// </summary>
 public sealed partial class SessionStats
 {
-    // Watcher mutations take its own lock first, then this display transaction lock.
-    // Snapshot readers take only this lock, then each stats lock separately.
-    internal object DuoSync { get; } = new();
-    /// <summary>The teammate's own isolated <see cref="SessionStats"/> instance, or
-    /// null solo — set/cleared by <see cref="LogWatcher"/> alongside its own teammate
-    /// lifecycle (SelectTeammate/Select). Never anything but a plain, unattached
-    /// instance: see <see cref="TeammateLogTail"/>'s class doc for the invariant this
-    /// rests on.</summary>
-    public SessionStats? Companion
-    {
-        get { lock (_lock) return _companion; }
-        // Repair round A8: watcher-owned rather than public — LogWatcher is the only
-        // intended caller (see the class doc above), and `internal` says so in the
-        // type system instead of only in a comment. Tests reach it via
-        // InternalsVisibleTo, same as everywhere else in this assembly.
-        internal set
-        {
-            lock (DuoSync)
-            {
-            // Lock-ordering invariant (plan Part 2e): DuoSnapshot/DuoVersion read the
-            // companion's own lock-protected members while this instance's own lock
-            // (if any) is not held across that call — never the reverse. A companion
-            // that itself had a companion would let that ordering invert two levels
-            // deep, so chaining is refused outright rather than trusted to never happen.
-            // Read OUTSIDE this instance's own lock (repair round A8): value.Companion
-            // takes value's lock, and holding ours across that call would invert the
-            // same ordering this comment already protects one level up.
-            if (value?.Companion is not null)
-                throw new InvalidOperationException(
-                    "A teammate's own Companion must stay null — chaining is not supported.");
-            // Repair round A8, the OTHER direction: the check above cannot see that
-            // THIS instance is ALREADY serving as SOME OTHER instance's companion
-            // right now (mine.Companion = mate succeeds, then mate.Companion = third
-            // used to succeed too — mate ends up simultaneously mine's companion and
-            // third's primary, the same two-deep chain from the other end). Checking
-            // `IsSomeonesCompanion` (implicit `this`) is exactly that back-reference.
-            if (value is not null && IsSomeonesCompanion)
-                throw new InvalidOperationException(
-                    "This instance is already serving as another primary's Companion — "
-                    + "it cannot also be given one of its own.");
-            SessionStats? old;
-            lock (_lock)
-            {
-                old = _companion;
-                // Repair round A2 (part ii): a companion swap must not go on carrying
-                // a PREVIOUS teammate's rolled-over segments into a stranger's totals,
-                // and the old companion's future rollovers must stop reaching this
-                // instance at all once it is no longer the companion.
-                if (old is not null) old.SessionEnding -= OnCompanionSessionEnding;
-                _companion = value;
-                _companionCarry = null;
-                _companionCarrySpans.Clear();
-                _companionCarryUntracked = 0;
-                _duoMemo = null;
-                _promotedPartyKillsByTarget.Clear();
-                // Repair round C8: a new companion may be a different log entirely —
-                // possibly a different machine with a different clock — so any offset
-                // estimate built against the OLD companion must not go on describing
-                // the new one. Deliberately NOT cleared on a primary session rollover
-                // (see ClearPromotedPartyKillsByTarget's call sites): the offset
-                // characterises the PAIRING of two machines' clocks, not the watched
-                // character's session, so a rollover throwing it away would only mean
-                // re-earning an estimate that was still true.
-                _clockDrift.Reset();
-                if (value is not null) value.SessionEnding += OnCompanionSessionEnding;
-            }
-            old?.MarkAsSomeonesCompanion(false);
-            value?.MarkAsSomeonesCompanion(true);
-            }
-        }
-    }
-    private SessionStats? _companion;
-
-    /// <summary>Repair round A8: whether THIS instance is currently assigned as some
-    /// OTHER instance's <see cref="Companion"/> — the back-reference the one-hop
-    /// "does my new companion already have one" check on the setter cannot see for
-    /// itself. Guarded by this instance's OWN lock only, taken and released by the
-    /// OWNER's setter rather than while the owner still holds its own lock.</summary>
-    internal bool IsSomeonesCompanion { get { lock (_lock) return _isSomeonesCompanion; } }
-    private bool _isSomeonesCompanion;
-    private void MarkAsSomeonesCompanion(bool value) { lock (_lock) _isSomeonesCompanion = value; }
-
-    /// <summary>Repair round A2 (part i): the CURRENT session's start, for
-    /// <see cref="TeammateLogTail.PrimarySessionStart"/> — free (no sync-budget cost)
-    /// because this file reaches the private <c>_sessionStart</c> field for the same
-    /// reason it reaches <c>_lock</c>: the class is <c>sealed partial</c>. LogWatcher
-    /// is the only intended reader, wiring it into the teammate tail it owns; it is
-    /// `internal` rather than `private` only because it crosses the file boundary
-    /// within this assembly.</summary>
+    /// <summary>The CURRENT session's start — <see cref="DerivedTeammates"/> reads it on a
+    /// teammate's own isolated instance.</summary>
     internal DateTime? SessionStartSnapshot { get { lock (_lock) return _sessionStart; } }
 
-    /// <summary>Repair round C3: whether <paramref name="name"/> is recognized as
-    /// THIS instance's own pet right now — free access to the private
-    /// <c>_charm</c> field for the same reason as <c>_lock</c>. LogWatcher uses
-    /// this on the PRIMARY instance to classify a third-party <see cref="KillEvent"/>
-    /// the same way <c>Apply</c>'s own promotion rule does
-    /// (<c>k.Killer == "You" || IsPet(k.Killer)</c>), without needing that private
-    /// method exposed on SessionStats.cs itself.</summary>
-    internal bool IsMyPet(string name) { lock (_lock) return _charm.IsPet(name); }
-
-    /// <summary>Repair round C3: this instance's CURRENT pet name, read live rather
-    /// than via a full <see cref="Snapshot()"/> — LogWatcher calls this once per
-    /// third-party kill line to classify it, and a charm can change mid-session, so
-    /// reading it fresh at each kill (rather than a single frozen snapshot value)
-    /// is what lets a promoted-kill join correctly follow a pet swap instead of
-    /// only ever recognizing whichever pet the teammate had at some one moment.</summary>
+    /// <summary>This instance's CURRENT pet name, read live (a charm or a resummon can
+    /// change it mid-session) — the derived-teammate roster refuses a name equal to it.</summary>
     internal string? LivePetName { get { lock (_lock) return _charm.PetName; } }
 
-    /// <summary>
-    /// Repair round C3: the TRUE per-target count of the teammate's own promoted
-    /// kills, AS SEEN IN THIS (the primary's) OWN LOG — built by LogWatcher as it
-    /// dispatches each of the primary's own third-party <see cref="KillEvent"/>s
-    /// (<see cref="RecordTeammatePartyKill"/>), classifying the killer against the
-    /// companion's identity at the time using <see cref="IsMyPet"/>'s sibling
-    /// classification and <see cref="LivePetName"/>. This is the piece
-    /// <see cref="DuoStats.Combine"/>'s old subtraction was missing: it used to
-    /// subtract the teammate's SELF-REPORTED per-target kills
-    /// (<c>StatsSnapshot.YourKills</c>) from the PRIMARY's own party-kill breakdown,
-    /// which is wrong whenever the teammate's kill was not actually visible in the
-    /// primary's own log — subtracting a self-reported count from a row that never
-    /// counted it in the first place can delete a THIRD groupmate's real, visible
-    /// kill of the same target name. This dictionary counts only what the primary's
-    /// OWN log actually attributed to the teammate, so subtracting it can never
-    /// remove more than the primary's own row already contains, and never removes
-    /// a kill that belongs to anyone else.
-    ///
-    /// Cleared on every primary session boundary — <see cref="LogWatcher.OnPrimarySessionRolledOver"/>
-    /// (an autonomous internal roll, live or during replay) and <see cref="LogWatcher.Select(string, long, long)"/>'s
-    /// own explicit reset (a character switch or re-Select) — via
-    /// <see cref="ClearPromotedPartyKillsByTarget"/>, exactly mirroring the
-    /// lifecycle of the upstream <c>_partyKillsByTarget</c> dictionary it exists to
-    /// correct against.
-    /// </summary>
-    private readonly Dictionary<string, int> _promotedPartyKillsByTarget = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The version the desktop AND the phone read for the combined snapshot.
+    /// Equal to <see cref="CurrentVersion"/> while nothing is combined.</summary>
+    public long DuoVersion => CurrentVersion;
 
-    internal void RecordTeammatePartyKill(string target)
-    {
-        lock (_lock) _promotedPartyKillsByTarget[target] = _promotedPartyKillsByTarget.GetValueOrDefault(target) + 1;
-    }
+    /// <summary>The snapshot every display surface reads — <c>MainWindow.BuildSnapshot</c>'s
+    /// one call site. Solo while nothing is combined.</summary>
+    public StatsSnapshot DuoSnapshot(TimeSpan? recentWindow, IReadOnlyList<TrackedRule>? rules) =>
+        Snapshot(recentWindow, rules);
 
-    internal void ClearPromotedPartyKillsByTarget() { lock (_lock) _promotedPartyKillsByTarget.Clear(); }
-
-    internal Dictionary<string, int> SnapshotPromotedPartyKillsByTarget()
-    {
-        lock (_lock) return new Dictionary<string, int>(_promotedPartyKillsByTarget, StringComparer.OrdinalIgnoreCase);
-    }
-
-    /// <summary>Repair round C8: estimates how far the teammate's log's clock reads
-    /// from THIS (the primary's) own — see <see cref="ClockDriftEstimator"/>'s own
-    /// doc for why and how. Lives on the PRIMARY's instance, exactly like
-    /// <see cref="_promotedPartyKillsByTarget"/> above, populated by LogWatcher as it
-    /// observes a bystander-visible kill matching the teammate's own self-reported
-    /// one (<see cref="TeammateLogTail.LastOwnKillTimestamp"/>).</summary>
-    private readonly ClockDriftEstimator _clockDrift = new();
-
-    internal void RecordClockDriftSample(DateTime primaryTimestamp, DateTime teammateTimestamp) =>
-        _clockDrift.RecordSample(primaryTimestamp, teammateTimestamp);
-
-    internal void ObservePrimaryTeammateKill(string target, DateTime time) => _clockDrift.ObservePrimaryKill(target, time);
-    internal void ObserveTeammateOwnKill(string target, DateTime time) => _clockDrift.ObserveTeammateKill(target, time);
-    internal void ClearPendingClockKills() => _clockDrift.ClearPendingKills();
-
-    /// <summary>Repair round C8: the current best estimate of how far the teammate's
-    /// clock reads from this (the primary's) clock — positive means the primary's
-    /// clock reads AHEAD of the teammate's. Null when no bystander-visible kill has
-    /// yet let it be estimated; report this honestly rather than assuming
-    /// synchronised clocks nothing has confirmed. See
-    /// <see cref="ClockDriftEstimator"/>'s own doc for the estimation method.</summary>
-    public TimeSpan? EstimatedTeammateClockOffset => _clockDrift.Estimate;
-
-    /// <summary>How many samples <see cref="EstimatedTeammateClockOffset"/> is built
-    /// from — 0 exactly when that estimate is null.</summary>
-    public int TeammateClockOffsetSampleCount => _clockDrift.SampleCount;
-
-    /// <summary>True once enough is known to say the two logs' clocks disagree by
-    /// more than <see cref="ClockDriftEstimator.Threshold"/>. <see cref="DuoSnapshot"/>
-    /// refuses to combine while this is true, falling back to the solo snapshot
-    /// exactly as it already does with no teammate selected at all — this is a
-    /// judgement about whether the combine can be trusted, not a correction of
-    /// either side's timestamps (deliberately out of scope; see
-    /// <see cref="ClockDriftEstimator"/>'s own doc).</summary>
-    public bool TeammateClockOffsetExceedsThreshold => _clockDrift.ExceedsThreshold;
-
-    /// <summary>Repair round A2 (part ii): SessionStats.SessionGap's autonomous
-    /// 60-minute roll is upstream and cannot be suppressed within this file's own
-    /// sync budget, and it fires on the companion's OWN instance independently of
-    /// the primary's — so a gap in only the teammate's log used to roll THEIR session
-    /// while the primary's kept running, and their pre-roll contribution vanished
-    /// from every duo total from that moment on. This accumulates what
-    /// <see cref="OnCompanionSessionEnding"/> hands it — the FULL pre-roll snapshot,
-    /// built before reset and delivered after Apply releases its lock — so <see cref="DuoSnapshot"/> can add
-    /// it back in. Cleared when the companion changes (the setter above) or when the
-    /// PRIMARY's own session rolls (<see cref="ClearCompanionCarry"/>, called from
-    /// LogWatcher's existing Step 6b hook) — a carry only ever spans ONE primary
-    /// session, matching "reset only at primary session boundaries".</summary>
-    private StatsSnapshot? _companionCarry;
-    private readonly List<(DateTime Start, DateTime End)> _companionCarrySpans = [];
-    private double _companionCarryUntracked;
-    private sealed record CombatCapture(List<(DateTime Start, DateTime End)> Spans, double UntrackedSeconds);
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<StatsSnapshot, CombatCapture> EndingCombat = new();
-
-    // Called while upstream still holds _lock, before ResetLocked destroys the spans.
-    // The snapshot is the key, so concurrent rollovers cannot overwrite each other's
-    // accounting, and snapshots that nobody retains release their capture automatically.
-    private void CaptureDuoCombatBeforeReset(StatsSnapshot snapshot)
-    {
-        if (!_isSomeonesCompanion) return;
-        var (spans, untracked) = SnapshotCombatSpans();
-        EndingCombat.Add(snapshot, new CombatCapture(spans, untracked));
-    }
-
-    private void OnCompanionSessionEnding(StatsSnapshot ended)
-    {
-        // Repair round C1: DuoStats.CombineSameActorCarry, NOT the public two-actor
-        // Combine — the carry and `ended` are the SAME actor across two time
-        // segments, and folding them through Combine (which tags whatever it treats
-        // as "mate" with an actor label) tagged an already-tagged historical
-        // segment a second time on every subsequent rollover. See that method's own
-        // doc for the full reasoning.
-        lock (DuoSync)
-        lock (_lock)
-        {
-            _companionCarry = DuoStats.CombineSameActorCarry(_companionCarry, ended);
-            if (EndingCombat.TryGetValue(ended, out var combat))
-            {
-                _companionCarrySpans.AddRange(combat.Spans);
-                _companionCarryUntracked += combat.UntrackedSeconds;
-            }
-            else _companionCarryUntracked += ended.CombatSeconds;
-            _duoMemo = null;
-        }
-    }
-
-    /// <summary>Drops whatever the companion's own gap rollovers have carried
-    /// forward — called from <see cref="LogWatcher.OnPrimarySessionRolledOver"/>
-    /// alongside its existing <c>_teammate?.Stats.Reset()</c>, so a carry never
-    /// survives past the PRIMARY session it was accumulated during.</summary>
-    public void ClearCompanionCarry()
-    {
-        lock (DuoSync)
-        lock (_lock)
-        {
-            _companionCarry = null;
-            _companionCarrySpans.Clear();
-            _companionCarryUntracked = 0;
-            _duoMemo = null;
-        }
-    }
-
-    /// <summary>Union timestamped spans, including carried companion segments.
-    /// Untracked seconds are only the remainder of upstream's bounded span history;
-    /// their overlap cannot be recovered, so they are conservatively added.</summary>
+    /// <summary>Union timestamped spans. Untracked seconds are only the remainder of
+    /// upstream's bounded span history; their overlap cannot be recovered, so they are
+    /// conservatively added.</summary>
     internal static double UnionCombatSeconds(
         List<(DateTime Start, DateTime End)> mineSpans, double mineUntracked,
         List<(DateTime Start, DateTime End)> mateSpans, double mateUntracked,
@@ -279,21 +48,10 @@ public sealed partial class SessionStats
         return union + mineUntracked + mateUntracked + carryCombatSeconds;
     }
 
-    /// <summary>Audit finding: <c>DuoStats.CombineRecent</c> used to sum two
-    /// independently-windowed rates (<c>Dps = mine.Dps + mate.Dps</c>) — each already
-    /// divided by THAT side's own combat-seconds-in-window denominator, so two
-    /// non-overlapping 10-second fights of 1,000 damage each summed to 200 DPS where
-    /// the true rate over the 20-second union is 100, and the overstatement compounds
-    /// with every teammate folded in. This returns the RAW numerator — damage/healing
-    /// actually dealt in the last <paramref name="window"/> before this instance's own
-    /// last event — and that window's own combat spans, clipped to it, so a caller can
-    /// build the exact N-way union across a roster of any size (the same shape
-    /// <see cref="UnionCombatSeconds"/> already does for the whole-session figure) and
-    /// recompute the rate ONCE, never sum it. Free access to <c>_journal</c>/
-    /// <c>_combatSpans</c> for the same reason as everywhere else in this file: sealed
-    /// partial. A disconnected span list; the caller mutates it freely. No event this
-    /// instant (nothing has happened yet) returns all-zero/empty rather than
-    /// throwing.</summary>
+    /// <summary>The raw damage/healing this instance dealt in the last
+    /// <paramref name="window"/> before its own last event, and that window's combat
+    /// spans clipped to it, so a caller can union them across a roster and recompute
+    /// the rate once rather than summing already-divided rates.</summary>
     internal (double Damage, double Healing, List<(DateTime Start, DateTime End)> Spans) SnapshotRecentWindowForCombine(TimeSpan window)
     {
         lock (_lock)
@@ -311,15 +69,6 @@ public sealed partial class SessionStats
                     case HealEvent { Outgoing: true } h: healed += h.Amount; break;
                 }
             }
-            // Raw (unfloored) spans clipped to the window — exactly the shape
-            // Snapshot's own combatInWindow walk uses (it reads _combatSpans/
-            // _combatStart/_combatLast directly, never the floored copy
-            // SnapshotCombatSpans returns for the whole-session union). The
-            // "at least 1 second when there was damage" floor Snapshot applies
-            // AFTER summing every overlap is the caller's job here too — applying
-            // it per-side, before a multi-actor union, would double-count whenever
-            // more than one side's own single-hit floor fell inside the same
-            // overlapping second.
             var spans = new List<(DateTime Start, DateTime End)>();
             foreach (var (s, e) in _combatSpans)
             {
@@ -337,14 +86,9 @@ public sealed partial class SessionStats
         }
     }
 
-    /// <summary>Atomically takes a snapshot and its own combat-span accounting under
-    /// ONE hold of <c>_lock</c> — see repair round C7's comment on
-    /// <see cref="BuildDuoSnapshot"/> for why the two must never be captured as
-    /// separate statements (a concurrent mutation between them could put a span NEWER
-    /// than what the snapshot's own <c>DamageDealt</c> accounts for into a caller's
-    /// union denominator). Exposed for <see cref="TeammateCombine"/>'s live-instance
-    /// overload, which needs the exact same atomic pairing for a roster of any size,
-    /// not only one file-based companion.</summary>
+    /// <summary>A snapshot and its own combat-span accounting, taken under ONE hold of
+    /// the lock, so a concurrent hit cannot put a span newer than the snapshot's damage
+    /// into a caller's union denominator.</summary>
     public (StatsSnapshot Snapshot, List<(DateTime Start, DateTime End)> Spans, double Untracked)
         SnapshotWithSpansForCombine(TimeSpan? recentWindow, IReadOnlyList<TrackedRule>? rules)
     {
@@ -356,27 +100,10 @@ public sealed partial class SessionStats
         }
     }
 
-    /// <summary>Public wrapper for <see cref="SnapshotCombatSpans"/> — <see cref="TeammateCombine"/>'s
-    /// live-instance overload needs a derived teammate's own spans (and the primary's)
-    /// to build an exact N-way combat-seconds union across a whole roster, the same way
-    /// this class already builds one for its single file-based companion below.
-    /// Returns a fresh, disconnected copy each call, same as the private method it
-    /// wraps — the caller mutates its own list freely.</summary>
-    public (List<(DateTime Start, DateTime End)> Spans, double UntrackedSeconds) SnapshotCombatSpansForCombine()
-    {
-        lock (DuoSync) return SnapshotCombatSpans();
-    }
-
     /// <summary>Every span this instance can still account for exactly — the closed
-    /// spans still in <c>_combatSpans</c>, each stretched to the same 1-second floor
-    /// <c>CloseCombatLocked</c>/<c>BuildSnapshotLocked</c> apply to a single-hit span
-    /// (so a union built from these agrees with <see cref="StatsSnapshot.CombatSeconds"/>
-    /// on a solo instance), plus the still-open span if combat is live right now —
-    /// alongside the untracked remainder (see <see cref="UnionCombatSeconds"/>'s own
-    /// doc) that <c>_combatSpans</c>' 2048-entry trim can no longer name individually.
-    /// Locks its OWN <c>_lock</c> — reentrant-safe when the caller already holds it
-    /// (repair round C7's atomic capture in <see cref="DuoSnapshot"/> does exactly
-    /// that), and self-contained when it doesn't.</summary>
+    /// spans, each stretched to the same 1-second floor a single-hit span gets, plus the
+    /// still-open span — alongside the untracked remainder the 2048-entry trim can no
+    /// longer name individually.</summary>
     private (List<(DateTime Start, DateTime End)> Spans, double UntrackedSeconds) SnapshotCombatSpans()
     {
         static (DateTime, DateTime) Floor((DateTime Start, DateTime End) s) =>
@@ -390,150 +117,5 @@ public sealed partial class SessionStats
             var untracked = Math.Max(0, _closedCombatSeconds - trackedClosedSeconds);
             return (spans, untracked);
         }
-    }
-
-    /// <summary>Memoises the last <see cref="Combine"/> result by REFERENCE IDENTITY of
-    /// both inputs — <see cref="Snapshot"/> already returns the SAME cached instance
-    /// when nothing changed on that side, so this makes an unchanged duo pair free to
-    /// re-request from desktop displays without re-walking either
-    /// journal or re-merging any list.</summary>
-    private (StatsSnapshot Mine, StatsSnapshot? Mate, StatsSnapshot Combined)? _duoMemo;
-
-    /// <summary>Version of the desktop AND Mobile duo pair. Carry uses the live segment's
-    /// version because upstream versions already continue across resets. Mobile's pump
-    /// gate reads this too (2026-09-17, reversing the earlier primary-only call): the
-    /// gate and the snapshot it pushes must agree on which version moved, or a teammate's
-    /// own activity — invisible to <see cref="CurrentVersion"/> alone — moves the pushed
-    /// snapshot's <c>Version</c> without ever satisfying the gate, and the 50 ms pump
-    /// pushes to the phone forever. With no teammate this equals <see cref="CurrentVersion"/>
-    /// exactly, so the no-teammate path is unchanged.
-    ///
-    /// <b>Audit finding:</b> while <see cref="TeammateClockOffsetExceedsThreshold"/> is
-    /// true, <see cref="BuildDuoSnapshot"/> refuses to combine and pushes the SOLO
-    /// snapshot (whose <c>Version</c> is <see cref="CurrentVersion"/> alone) for as long
-    /// as the drift lasts — this must read exactly the same branch, or the companion's
-    /// own activity keeps moving the sum here while the pushed snapshot's Version stays
-    /// pinned to the primary's, so the gate never again agrees with what was last pushed
-    /// and the pump re-sends the identical, unchanged snapshot every reconciliation tick
-    /// until the drift clears.</summary>
-    public long DuoVersion => Companion is null || TeammateClockOffsetExceedsThreshold
-        ? CurrentVersion
-        : CurrentVersion + Companion.CurrentVersion;
-
-    /// <summary>The combined snapshot for display — <see cref="MainWindow.BuildSnapshot"/>'s
-    /// one call site. <paramref name="rules"/> is applied ONLY to the watched
-    /// character's own <see cref="Snapshot"/>: per Part 1c, the teammate's own instance
-    /// must always be snapshotted with <c>rules: null</c> (a duo Text-watch match would
-    /// otherwise be evaluated against a session nothing subscribes to). Returns
-    /// <paramref name="mine"/>'s own snapshot BY REFERENCE when no teammate is
-    /// selected, so the no-teammate path costs nothing beyond the existing memo.</summary>
-    public StatsSnapshot DuoSnapshot(TimeSpan? recentWindow, IReadOnlyList<TrackedRule>? rules)
-    {
-        lock (DuoSync) return BuildDuoSnapshot(recentWindow, rules);
-    }
-
-    private StatsSnapshot BuildDuoSnapshot(TimeSpan? recentWindow, IReadOnlyList<TrackedRule>? rules)
-    {
-        // Solo/refused snapshots keep the original cheap path: no span copies.
-        if (Companion is null || _clockDrift.ExceedsThreshold) return Snapshot(recentWindow, rules);
-        // Repair round C7: mine's own snapshot and its combat-span accounting are
-        // captured TOGETHER, under one hold of _lock — Monitor is reentrant, so
-        // Snapshot's and SnapshotCombatSpans' own internal `lock (_lock)` blocks
-        // nest safely on this same thread. Before this, the two were separate
-        // statements with no lock spanning them, so a hit landing between them
-        // (from another thread — the Mobile pump and the poll timer are not
-        // guaranteed to be the same one) could put a span NEWER than what `mine`'s
-        // already-captured DamageDealt accounts for into the union's denominator.
-        StatsSnapshot mine;
-        List<(DateTime Start, DateTime End)> mineSpans;
-        double mineUntracked;
-        lock (_lock)
-        {
-            mine = Snapshot(recentWindow, rules);
-            (mineSpans, mineUntracked) = SnapshotCombatSpans();
-        }
-
-        // Repair round A8: captured once, under lock, rather than re-reading the
-        // Companion property (itself now lock-protected) a second time further down —
-        // a concurrent reassignment between the two reads used to be able to combine
-        // mine's snapshot with a companion that was no longer this instance's.
-        SessionStats? companion;
-        lock (_lock) companion = _companion;
-        if (companion is null) return mine;
-
-        // Repair round C8: refuse to combine when the two logs' clocks disagree by
-        // more than can be trusted — see TeammateClockOffsetExceedsThreshold's own
-        // doc. Falls back to the solo snapshot exactly like "no companion" above;
-        // the estimate itself stays readable through EstimatedTeammateClockOffset /
-        // TeammateClockOffsetSampleCount regardless of whether combining proceeds.
-        if (_clockDrift.ExceedsThreshold) return mine;
-
-        // Repair round C7: the SAME atomic pairing for the companion's side, under
-        // ITS OWN lock — reaching another instance's private `_lock` field is safe
-        // from within this partial class's own body, same as `_combatSpans` et al.
-        // Repair round A1: the SAME window, so the teammate's own recent kills/DPS/
-        // HPS are actually there to combine — a null window here left mate.Recent
-        // always null and CombineRecent silently returned mine's rates untouched.
-        StatsSnapshot? mate;
-        List<(DateTime Start, DateTime End)> mateSpans;
-        double mateUntracked;
-        lock (companion._lock)
-        {
-            mate = companion.Snapshot(recentWindow, null);
-            (mateSpans, mateUntracked) = companion.SnapshotCombatSpans();
-        }
-        if (mate is null) return mine;
-
-        // DuoSync spans both snapshots and the carry update on the production path.
-        // ClearCompanionCarry and the rollover callback explicitly invalidate the memo.
-        StatsSnapshot? carry;
-        lock (_lock) carry = _companionCarry;
-        // Repair round C1: same-actor fold here too — `mate` (the companion's
-        // CURRENT live segment) and `carry` (everything it rolled over BEFORE now)
-        // are the same teammate across time, not two different people. The public
-        // Combine's actor-tagging must run exactly once, in the REAL primary+mate
-        // combine below, on whatever this produces.
-        var effectiveMate = DuoStats.CombineSameActorCarry(carry, mate, live: true);
-
-        lock (_lock)
-        {
-            if (_duoMemo is { } memo && ReferenceEquals(memo.Mine, mine) && ReferenceEquals(memo.Mate, mate))
-                return memo.Combined;
-        }
-
-        // Repair round A3: the teammate's OWN character name, so Combine can tell
-        // their promoted kills apart from a genuine third groupmate's in the residual
-        // party breakdown. Read from the SessionStats instance, not the snapshot —
-        // StatsSnapshot carries no CharacterName field of its own.
-        //
-        // Retained companion spans participate in the same union as primary history.
-        mateSpans.AddRange(_companionCarrySpans);
-        var combatSecondsOverride = UnionCombatSeconds(mineSpans, mineUntracked, mateSpans,
-            mateUntracked + _companionCarryUntracked, 0);
-        // Repair round C3: the TRUE per-target count of the teammate's promoted
-        // kills as seen in MY OWN log — see _promotedPartyKillsByTarget's own doc.
-        var mateVisibleKillsByTarget = SnapshotPromotedPartyKillsByTarget();
-        // Audit finding: an exact recent-window union (see CombineRecentExact's own
-        // doc) rather than DuoStats.CombineRecent's old "sum two already-divided
-        // rates" — the companion's carry is deliberately not folded into the window
-        // spans here: the window is short, and a carry only exists the instant a
-        // rollover just happened, which is the same known limitation the carry
-        // already has in the recent-window figure it reports on its own.
-        DuoStats.RecentWindowTotals? recentWindowTotals = null;
-        if (recentWindow is { } win)
-        {
-            var (mineDmg, mineHealed, mineWinSpans) = SnapshotRecentWindowForCombine(win);
-            var (mateDmg, mateHealed, mateWinSpans) = companion.SnapshotRecentWindowForCombine(win);
-            var winUnion = UnionCombatSeconds(mineWinSpans, 0, mateWinSpans, 0, 0);
-            // Same "at least 1 second when there was real damage" floor Snapshot's own
-            // combatInWindow applies, moved to the COMBINED total so a single hit on
-            // each side inside the same overlapping second cannot double the floor.
-            if (winUnion < 1 && mineDmg + mateDmg > 0) winUnion = 1;
-            recentWindowTotals = new DuoStats.RecentWindowTotals(mineDmg, mineHealed, mateDmg, mateHealed, winUnion);
-        }
-        var combined = DuoStats.Combine(mine, effectiveMate, companion.CharacterName, combatSecondsOverride,
-            mateVisibleKillsByTarget, recentWindowTotals);
-        lock (_lock) _duoMemo = (mine, mate, combined);
-        return combined;
     }
 }

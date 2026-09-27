@@ -9,8 +9,8 @@ namespace EQBuddy.Tests;
 /// Repair rounds R1/R2 closed these leaks with a <c>fromTeammate</c> flag threaded
 /// through <see cref="SessionStats.Apply"/> — and each of three audits found the same
 /// class of bug in a NEW place the flag had not reached yet. Step 3 replaces the flag
-/// entirely: a teammate's log now drives its OWN <see cref="SessionStats"/> instance
-/// (exactly as <see cref="TeammateLogTail"/> builds one — plain construction, no store
+/// entirely: every teammate's rewritten lines now drive their OWN <see cref="SessionStats"/>
+/// instance (exactly as <see cref="DerivedTeammates"/> builds one — plain construction, no store
 /// attached, no character identity borrowed from the primary), so there is no shared
 /// object left for a teammate's line to corrupt. Every test below replays the SAME
 /// lines that used to require a gate — now applied to a genuinely SEPARATE instance —
@@ -31,7 +31,7 @@ public class TeammateActorLocalGuardTests
     }
 
     /// <summary>Builds the teammate's own session exactly the way
-    /// <see cref="TeammateLogTail"/>'s constructor does: plain <c>new SessionStats()</c>,
+    /// <see cref="DerivedTeammates"/> does: plain <c>new SessionStats()</c>,
     /// no store ever attached, no subscriber. Then applies every given line to IT, not
     /// to <paramref name="watched"/> — the two are separate objects from construction
     /// on, which is the whole mechanism.</summary>

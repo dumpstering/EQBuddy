@@ -6,18 +6,11 @@ namespace EQBuddy.Core;
 public sealed class AppSettings
 {
     public string? LogFolder { get; set; }
-    /// <summary>Full path to a teammate's eqlog_&lt;char&gt;_&lt;server&gt;.txt (a synced copy kept
-    /// OUTSIDE the game's Logs folder, or character follow would flip to it). Null = off.
-    /// Its lines ride the same pipeline as your own log; see LogWatcher.TeammateFeed.</summary>
-    public string? TeammateLogPath { get; set; }
-    /// <summary>The no-file teammate feature's own roster (own-log-teammates,
-    /// STEP 2): names the player has manually added in Options → Behavior, merged
-    /// with auto-detection at read time by <see cref="TeammateRoster.Roster"/> —
-    /// this list is never itself the whole roster. A name here that is later learned
-    /// to be an NPC (<c>Targeted (NPC): &lt;name&gt;</c>) is still excluded at read
-    /// time, so a stale manual entry cannot outrank that safety check. Independent of
-    /// <see cref="TeammateLogPath"/> above (the older, file-based feature); the two
-    /// features may coexist until the file-based one is retired.</summary>
+    /// <summary>Teammates the player added by hand in Options → Behavior, merged with
+    /// the names auto-detected from group lines in their OWN log by
+    /// <see cref="TeammateRoster.Roster"/> — never itself the whole roster. A name here
+    /// that the log later labels an NPC (<c>Targeted (NPC): &lt;name&gt;</c>) is still
+    /// excluded at read time, so a stale entry cannot outrank that safety check.</summary>
     public List<string> TeammateNames { get; set; } = [];
     /// <summary>Folder holding EQBuddySetup.exe for updates; null = auto-detect OneDrive.</summary>
     public string? UpdateFolder { get; set; }

@@ -4,9 +4,9 @@ using EQBuddy.Core;
 namespace EQBuddy.Tests;
 
 /// <summary>
-/// Step 4's duo combine: <see cref="DuoStats.Combine"/> and the
-/// <see cref="SessionStats.DuoSnapshot"/>/<see cref="SessionStats.DuoVersion"/> seam
-/// around it. <see cref="EveryStatsSnapshotPropertyIsClassifiedAsCombinedOrPassedThrough"/>
+/// The duo combine's pure arithmetic, <see cref="DuoStats.Combine"/> (the live seam
+/// around it, <see cref="SessionStats.DuoSnapshot"/>, is covered in
+/// <c>DuoSnapshotTests</c>). <see cref="EveryStatsSnapshotPropertyIsClassifiedAsCombinedOrPassedThrough"/>
 /// is the centrepiece the plan names: a curated classification of EVERY
 /// <see cref="StatsSnapshot"/> property, checked against reflection rather than a fixed
 /// list, so a property added to <see cref="StatsSnapshot"/> tomorrow with no row here
@@ -29,7 +29,6 @@ public class DuoStatsTests
         if (under == typeof(DateTime)) return new DateTime(2026, 1, 1).AddMinutes(seed);
         if (under == typeof(TimeSpan)) return TimeSpan.FromSeconds(seed);
         if (type == typeof(string)) return $"{tag}{seed}";
-        if (type == typeof(StatsSnapshot)) return null;   // Mate: handled by the caller, not seeded generically
         if (type.IsGenericType && (type.GetGenericTypeDefinition() == typeof(List<>)
             || type.GetGenericTypeDefinition() == typeof(IReadOnlyList<>)))
             return BuildList(type, tag, seed);
@@ -68,8 +67,7 @@ public class DuoStatsTests
     }
 
     /// <summary>Builds a StatsSnapshot with every property (except the computed
-    /// <see cref="StatsSnapshot.CastCompletion"/> and the escape-hatch
-    /// <see cref="StatsSnapshot.Mate"/>) set to a distinct, TAG-derived value — via
+    /// <see cref="StatsSnapshot.CastCompletion"/>) set to a distinct, TAG-derived value — via
     /// reflection's <c>PropertyInfo.SetValue</c>, which reaches <c>init</c> setters
     /// exactly like any other setter (the <c>init</c> restriction is a C#-compiler-only
     /// check, invisible to the CLR).</summary>
@@ -77,7 +75,7 @@ public class DuoStatsTests
     {
         var snap = new StatsSnapshot();
         var props = typeof(StatsSnapshot).GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.CanWrite && p.Name != nameof(StatsSnapshot.Mate));
+            .Where(p => p.CanWrite);
         var i = seedBase;
         foreach (var p in props)
         {
@@ -135,7 +133,6 @@ public class DuoStatsTests
         [nameof(StatsSnapshot.CopperPerHour)] = "recompute over mine.Elapsed",
         [nameof(StatsSnapshot.CopperPerActiveHour)] = "recompute over mine.ActiveSeconds",
         [nameof(StatsSnapshot.Recent)] = "mixed: Window/HasFullWindow/XpPercent/XpPerHour from mine; Kills/Copper/Dps/Hps summed",
-        [nameof(StatsSnapshot.Mate)] = "the escape hatch itself — set to the other side's own snapshot",
         // B4 (the user's product decision, 2026-09-07): merge the per-player
         // breakdowns so every board sums to its own header. Ability/spell/hit-type
         // rows (keyed by a NAME that doesn't say who performed it) keep mine's own
@@ -214,8 +211,8 @@ public class DuoStatsTests
         [nameof(StatsSnapshot.LastLevel)] = "yours",
         // DRA-71 D3 (upstream 593af9ef): the log's timestamp travels with the announced
         // level so MainWindow's tick can gate QuestLedger.SetLevel on ObservedLevelFor —
-        // same passthrough as LastLevel itself, and DuoStats.Combine/CombineSameActorCarry
-        // must copy both or a level-up during a duo session is silently never persisted.
+        // same passthrough as LastLevel itself, and DuoStats.Combine must copy both
+        // or a level-up during a duo session is silently never persisted.
         [nameof(StatsSnapshot.LastLevelAt)] = "yours — travels with LastLevel (DRA-71 D3)",
         [nameof(StatsSnapshot.SkillUps)] = "yours",
         [nameof(StatsSnapshot.SkillUpTotal)] = "yours",
@@ -544,260 +541,6 @@ public class DuoStatsTests
         Assert.Equal(1000.0 / 90.0, combined.SessionDps, 3);
     }
 
-    // ---- B3: CombatSeconds is the real UNION of both sides' timestamped combat
-    // spans, not Math.Max — integration tests against real SessionStats/Companion/
-    // DuoSnapshot, since the span data (_combatSpans, _closedCombatSeconds, the
-    // still-open span) lives on the live instances, not on StatsSnapshot. ----
-
-    private static DamageDealtEvent Dmg(DateTime t, int amount = 100) =>
-        new(t, "a target", amount, DamageKind.Melee, "You", false);
-
-    private static readonly DateTime T0 = new(2026, 1, 1, 12, 0, 0);
-
-    /// <summary>Applies hits every <= 9 seconds (under SessionStats' 10s CombatGap)
-    /// from <paramref name="start"/> to <paramref name="end"/> inclusive, so the
-    /// resulting combat span is exactly one continuous [start, end] window rather
-    /// than a single pair of endpoint events that would exceed CombatGap and
-    /// silently close/reopen as two separate 1-second spans. Returns the total
-    /// damage applied, for SessionDps assertions.</summary>
-    private static long ApplyContinuousFight(SessionStats s, DateTime start, DateTime end, int perHit = 100)
-    {
-        var times = new List<DateTime>();
-        for (var t = start; t < end; t = t.AddSeconds(9)) times.Add(t);
-        times.Add(end);
-        foreach (var t in times) s.Apply(Dmg(t, perHit));
-        return (long)times.Count * perHit;
-    }
-
-    [Fact]
-    public void TwoNonOverlappingFightsUnionRatherThanTakeTheMax()
-    {
-        // mine: one fight, t=0..9 (9s). mate: a SEPARATE fight, t=100..109 (9s) —
-        // over 10s (CombatGap) away from mine's, so genuinely two disjoint windows.
-        // Math.Max(9,9)=9 would halve the real 18s duo total.
-        var mine = new SessionStats();
-        var mate = new SessionStats();
-        mine.Companion = mate;
-        var mineDmg = ApplyContinuousFight(mine, T0, T0.AddSeconds(9));
-        var mateDmg = ApplyContinuousFight(mate, T0.AddSeconds(100), T0.AddSeconds(109));
-
-        var duo = mine.DuoSnapshot(null, null);
-
-        Assert.Equal(18, duo.CombatSeconds, 3);
-        Assert.Equal((mineDmg + mateDmg) / 18.0, duo.SessionDps, 3);
-    }
-
-    [Fact]
-    public void TwoPartiallyOverlappingFightsUnionToTheOuterSpanNotTheSum()
-    {
-        // mine: t=0..19. mate: t=9..29 — overlaps mine's tail by 10s. The union is
-        // one continuous window, t=0..29 = 29s: NOT the sum (19+20=39, double-
-        // counting the shared 9..19 stretch) and NOT the max (20).
-        var mine = new SessionStats();
-        var mate = new SessionStats();
-        mine.Companion = mate;
-        var mineDmg = ApplyContinuousFight(mine, T0, T0.AddSeconds(19));
-        var mateDmg = ApplyContinuousFight(mate, T0.AddSeconds(9), T0.AddSeconds(29));
-
-        var duo = mine.DuoSnapshot(null, null);
-
-        Assert.Equal(29, duo.CombatSeconds, 3);
-        Assert.Equal((mineDmg + mateDmg) / 29.0, duo.SessionDps, 3);
-    }
-
-    [Fact]
-    public void OneFightFullyContainingAnotherStaysAtTheOuterDuration()
-    {
-        // mine: t=0..29. mate: t=9..19, entirely INSIDE mine's window. The union is
-        // still just mine's 29s — mate adds nothing new to cover — which is also
-        // what Math.Max(29,10) already got right; the union must not regress this
-        // case while fixing the other two.
-        var mine = new SessionStats();
-        var mate = new SessionStats();
-        mine.Companion = mate;
-        var mineDmg = ApplyContinuousFight(mine, T0, T0.AddSeconds(29));
-        var mateDmg = ApplyContinuousFight(mate, T0.AddSeconds(9), T0.AddSeconds(19));
-
-        var duo = mine.DuoSnapshot(null, null);
-
-        Assert.Equal(29, duo.CombatSeconds, 3);
-        Assert.Equal((mineDmg + mateDmg) / 29.0, duo.SessionDps, 3);
-    }
-
-    [Fact]
-    public void TheDuoVersionMovesWhenOnlyTheTeammateMoves()
-    {
-        var mine = new SessionStats();
-        var mate = new SessionStats();
-        mine.Apply(LogParser.Parse("[Sat Jul 18 15:00:00 2026] You have slain orc pawn!")!);
-        mine.Companion = mate;
-
-        var duoBefore = mine.DuoVersion;
-        var mineVersionBefore = mine.CurrentVersion;
-        mate.Apply(LogParser.Parse("[Sat Jul 18 15:00:05 2026] You have slain orc centurion!")!);
-
-        Assert.True(mine.DuoVersion > duoBefore);
-        // CurrentVersion (the primary alone) must NOT have moved — DuoVersion is the
-        // one that must be used wherever a teammate's own activity should be visible
-        // (the plan's version-plumbing trap: gating the Mobile pump on CurrentVersion
-        // alone would never notice the teammate's own activity).
-        Assert.Equal(mineVersionBefore, mine.CurrentVersion);
-    }
-
-    [Fact]
-    public void TheArchiverStillRecordsTheWatchedCharacterAlone()
-    {
-        // SessionArchiver.FinalizeActive/Checkpoint always call the plain Snapshot() —
-        // never DuoSnapshot — so proving Snapshot() never carries a Mate is the
-        // Core-level guarantee that archives/history.db stay solo (Part 7 item 2's
-        // decision, logged as reversible-and-privacy-safe).
-        var mine = new SessionStats();
-        var mate = new SessionStats();
-        mine.Apply(LogParser.Parse("[Sat Jul 18 15:00:00 2026] You have slain orc pawn!")!);
-        mate.Apply(LogParser.Parse("[Sat Jul 18 15:00:05 2026] You have slain orc centurion!")!);
-        mine.Companion = mate;
-
-        var plain = mine.Snapshot();
-        Assert.Null(plain.Mate);
-        Assert.Equal(1, plain.YourKillCount);   // never combined
-
-        var duo = mine.DuoSnapshot(null, null);
-        Assert.NotNull(duo.Mate);
-        Assert.Equal(2, duo.YourKillCount);   // DuoSnapshot is the one place combining happens
-    }
-
-    /// <summary>
-    /// A1: <c>DuoSnapshot</c> snapshotted the companion with <c>recentWindow: null</c>,
-    /// so <see cref="StatsSnapshot.Recent"/> on the mate side was ALWAYS null and
-    /// <c>CombineRecent</c> silently returned the primary's own rates untouched — the
-    /// teammate could get five kills inside the recent window and the duo's recent
-    /// kill count would still read as if they had not. This is an INTEGRATION test
-    /// against <see cref="SessionStats.DuoSnapshot"/> deliberately, not a
-    /// <see cref="DuoStats.Combine"/> fixture: a fixture test hands both sides an
-    /// already-built <see cref="RecentRates"/> and cannot see a caller passing the
-    /// wrong window into the wrong <c>Snapshot</c> call.
-    /// </summary>
-    [Fact]
-    public void DuoSnapshotCombinesTheTeammatesRecentWindowToo()
-    {
-        var mine = new SessionStats();
-        var mate = new SessionStats();
-        mine.Companion = mate;
-
-        mine.Apply(LogParser.Parse("[Sat Jul 18 15:00:00 2026] You have slain orc pawn!")!);
-        mate.Apply(LogParser.Parse("[Sat Jul 18 15:00:05 2026] You have slain orc centurion!")!);
-        mate.Apply(LogParser.Parse("[Sat Jul 18 15:00:10 2026] You have slain orc centurion!")!);
-
-        var duo = mine.DuoSnapshot(TimeSpan.FromMinutes(30), null);
-
-        Assert.NotNull(duo.Recent);
-        // Mine contributed 1 kill in-window; the teammate's 2 must be added in, not
-        // dropped because their side was snapshotted with a null window.
-        Assert.Equal(3, duo.Recent!.Kills);
-    }
-
-    /// <summary>
-    /// A2 (part ii), highest priority of the repair round: SessionStats.SessionGap's
-    /// autonomous 60-minute roll is upstream, unmodifiable within this file's own
-    /// budget, and fires on EACH instance independently — so a 60-minute gap in only
-    /// the teammate's log rolls THEIR session while the primary's own keeps running,
-    /// and their pre-roll contribution used to vanish from the duo total entirely.
-    /// The fix cannot suppress the roll (it can't touch SessionStats.cs), so it
-    /// carries the ended segment FORWARD instead: <see cref="SessionStats.Companion"/>'s
-    /// setter subscribes to the companion's own <c>SessionEnding</c>, which fires with
-    /// the full pre-roll snapshot before <c>ResetLocked</c> wipes it.
-    /// </summary>
-    [Fact]
-    public void ACompanionOnlyGapRolloverKeepsItsPreRollContributionInTheDuoTotal()
-    {
-        var mine = new SessionStats();
-        var mate = new SessionStats();
-        mine.Companion = mate;
-
-        mate.Apply(LogParser.Parse("[Sat Jul 18 15:00:00 2026] You have slain orc pawn!")!);      // mate session 1: 1 kill
-        mine.Apply(LogParser.Parse("[Sat Jul 18 15:00:05 2026] You have slain orc centurion!")!); // mine kill 1
-        mine.Apply(LogParser.Parse("[Sat Jul 18 15:30:00 2026] You have slain orc centurion!")!); // mine kill 2 — keeps MINE's own gap under 60 min
-
-        // 65 minutes after mate's own last event (but only 35 after mine's) — rolls
-        // ONLY the teammate's internal session, exactly the bug this fixes.
-        mate.Apply(LogParser.Parse("[Sat Jul 18 16:05:00 2026] You have slain orc guard!")!);      // mate session 2: 1 kill
-        mine.Apply(LogParser.Parse("[Sat Jul 18 16:05:05 2026] You have slain orc centurion!")!); // mine kill 3 — no gap on mine's side
-
-        var duo = mine.DuoSnapshot(null, null);
-
-        // mine: 3, mate: 1 (carried from the rolled-over segment) + 1 (current) = 5.
-        Assert.Equal(5, duo.YourKillCount);
-    }
-
-    /// <summary>Companion.set with a NEW teammate must not go on carrying a PREVIOUS
-    /// teammate's ended segments forward into a stranger's totals.</summary>
-    [Fact]
-    public void ReassigningCompanionDropsThePreviousOnesCarry()
-    {
-        var mine = new SessionStats();
-        var mate = new SessionStats();
-        mine.Companion = mate;
-        mate.Apply(LogParser.Parse("[Sat Jul 18 15:00:00 2026] You have slain orc pawn!")!);
-        mate.Apply(LogParser.Parse("[Sat Jul 18 16:05:00 2026] You have slain orc guard!")!); // rolls mate, carries 1 kill
-
-        var newMate = new SessionStats();
-        mine.Companion = newMate;   // swap teammates mid-session
-        newMate.Apply(LogParser.Parse("[Sat Jul 18 16:05:05 2026] You have slain orc centurion!")!);
-
-        var duo = mine.DuoSnapshot(null, null);
-        Assert.Equal(1, duo.YourKillCount);   // only newMate's kill — the old carry must not leak in
-    }
-
-    /// <summary>LogWatcher's existing Step 6b hook (<c>OnPrimarySessionRolledOver</c>)
-    /// resets the companion's live Stats at a PRIMARY session boundary; it must also
-    /// clear whatever carry had built up, or a stale teammate contribution from the
-    /// primary's PREVIOUS session keeps padding every duo total in the new one.</summary>
-    [Fact]
-    public void ClearCompanionCarryDropsAnAccumulatedSegment()
-    {
-        var mine = new SessionStats();
-        var mate = new SessionStats();
-        mine.Companion = mate;
-        mate.Apply(LogParser.Parse("[Sat Jul 18 15:00:00 2026] You have slain orc pawn!")!);
-        mate.Apply(LogParser.Parse("[Sat Jul 18 16:05:00 2026] You have slain orc guard!")!); // rolls mate, carries 1 kill
-
-        mine.ClearCompanionCarry();
-
-        var duo = mine.DuoSnapshot(null, null);
-        Assert.Equal(1, duo.YourKillCount);   // only mate's CURRENT (post-roll) kill remains
-    }
-
-    [Fact]
-    public void CompanionRefusesToChain()
-    {
-        var mine = new SessionStats();
-        var mate = new SessionStats();
-        var mateOfMate = new SessionStats();
-        mate.Companion = mateOfMate;
-
-        Assert.Throws<InvalidOperationException>(() => mine.Companion = mate);
-    }
-
-    /// <summary>
-    /// A8: the ORIGINAL order — assign a companion, THEN try to give that companion
-    /// one of its own — was never enforced. <c>mine.Companion = mate</c> succeeds
-    /// (mate.Companion was null at the time); a bare "mate.Companion is not null" one-
-    /// hop check on the SETTER cannot see that mate is now ALREADY serving as mine's
-    /// companion, so <c>mate.Companion = third</c> used to succeed too, leaving mate
-    /// simultaneously mine's companion AND third's primary — the exact two-deep chain
-    /// the original check exists to prevent, reachable from the other direction.
-    /// </summary>
-    [Fact]
-    public void AnInstanceAlreadyServingAsACompanionRefusesToBeGivenOneOfItsOwn()
-    {
-        var mine = new SessionStats();
-        var mate = new SessionStats();
-        var third = new SessionStats();
-        mine.Companion = mate;   // succeeds — mate had no companion of its own
-
-        Assert.Throws<InvalidOperationException>(() => mate.Companion = third);
-    }
-
     // ---- B4: the user's product decision — merge the per-player breakdowns so
     // every board sums to its own header, keeping ability/spell/hit-type rows
     // attributable by tagging the teammate's onto the list rather than summing
@@ -932,37 +675,8 @@ public class DuoStatsTests
         Assert.Equal(150, combined.Effort.DamageDoneInResumeWindow);         // 100 + 50
     }
 
-    // ---- C1: the companion carry needs a DEDICATED same-actor fold, separate from
-    // the primary-plus-mate combine — reusing the two-actor combine recursively on
-    // an ended segment tagged and re-tagged the SAME teammate as if a second person
-    // had joined. ----
-
-    [Fact]
-    public void CombineSameActorCarryAggregatesAbilityRowsByNameWithNoTag()
-    {
-        var carry = new StatsSnapshot
-        {
-            DamageBySource = [new SourceDamage("Kick", 5, 500)],
-            Elapsed = TimeSpan.FromHours(1),
-        };
-        var ended = new StatsSnapshot
-        {
-            DamageBySource = [new SourceDamage("Kick", 3, 300)],
-        };
-
-        var folded = DuoStats.CombineSameActorCarry(carry, ended);
-
-        // ONE row, not two, and no "(teammate)"/"(Buddy)"-shaped tag anywhere — this
-        // is the SAME actor across two time segments, not a second person.
-        var row = Assert.Single(folded.DamageBySource);
-        Assert.Equal("Kick", row.Name);
-        Assert.Equal(8, row.Hits);
-        Assert.Equal(800, row.Total);
-    }
-
     /// <summary>Regression for the sync onto upstream c8259fe3 (DRA-71 D3):
-    /// <c>LastLevel</c> travels through both <see cref="DuoStats.Combine"/> and
-    /// <see cref="DuoStats.CombineSameActorCarry"/>, but <c>LastLevelAt</c> — the log
+    /// <c>LastLevel</c> travels through <see cref="DuoStats.Combine"/>, but <c>LastLevelAt</c> — the log
     /// timestamp upstream added alongside it so MainWindow's tick can gate
     /// <c>QuestLedger.SetLevel</c> on <c>ObservedLevelFor</c> — did not, because this
     /// branch's <see cref="StatsSnapshot"/> predates that upstream field. Left
@@ -972,7 +686,7 @@ public class DuoStatsTests
     /// Confirmed to FAIL (both asserts) by reverting the two <c>LastLevelAt = …</c>
     /// lines this commit adds to <c>DuoStats.cs</c>.</summary>
     [Fact]
-    public void LastLevelAtTravelsWithLastLevelThroughBothCombinePaths()
+    public void LastLevelAtTravelsWithLastLevelThroughCombine()
     {
         var announcedAt = new DateTime(2026, 9, 20, 14, 30, 0);
         var mine = new StatsSnapshot { LastLevel = 43, LastLevelAt = announcedAt };
@@ -982,83 +696,6 @@ public class DuoStatsTests
         Assert.Equal(43, combined.LastLevel);
         Assert.Equal(announcedAt, combined.LastLevelAt);
 
-        var carry = new StatsSnapshot { LastLevel = 40, LastLevelAt = announcedAt.AddDays(-1) };
-        var ended = new StatsSnapshot { LastLevel = 43, LastLevelAt = announcedAt };
-        var folded = DuoStats.CombineSameActorCarry(carry, ended);
-        Assert.Equal(43, folded.LastLevel);
-        Assert.Equal(announcedAt, folded.LastLevelAt);
-    }
-
-    [Fact]
-    public void CombineSameActorCarrySumsDisjointCombatSecondsRatherThanTakingTheMax()
-    {
-        var carry = new StatsSnapshot { CombatSeconds = 20, DamageDealt = 200 };
-        var ended = new StatsSnapshot { CombatSeconds = 15, DamageDealt = 150 };
-
-        var folded = DuoStats.CombineSameActorCarry(carry, ended);
-
-        // Sequential segments (the ended segment happened entirely before the roll
-        // that produced the fresh live one) can never overlap — sum, not Math.Max
-        // (which would read 20) and not DuoCompanion's union (no span data survives
-        // a companion's own internal reset, so there is nothing to union here).
-        Assert.Equal(35, folded.CombatSeconds);
-    }
-
-    [Fact]
-    public void CombineSameActorCarryClearsTransientEffortRatherThanSummingIt()
-    {
-        var carry = new StatsSnapshot
-        {
-            // A large burst from the ENDED (now historical) segment.
-            Effort = new RecentEffort(TimeSpan.FromSeconds(30), 5000, 0, TimeSpan.FromSeconds(5), 5000),
-        };
-        var ended = new StatsSnapshot
-        {
-            Effort = new RecentEffort(TimeSpan.FromSeconds(30), 100, 50, TimeSpan.FromSeconds(5), 20),
-        };
-
-        var folded = DuoStats.CombineSameActorCarry(carry, ended);
-
-        // Repair round C1: an hour-old rollover's activity must not drive what the
-        // COLLAPSED HUD shows right now — Effort is a rolling ~30s window, not a
-        // running total, so folding a finished segment's window into anything live
-        // is meaningless. Cleared, not summed (summing would read 5100/50/5020).
-        Assert.Equal(RecentEffort.None, folded.Effort);
-    }
-
-    [Fact]
-    public void ATeammateOnlyRolloverDoesNotDoubleTagAbilityRowsInTheRealDuoSnapshot()
-    {
-        // Reproduces the exact reported symptom: a teammate-only 60-minute gap rolls
-        // ONLY their session (SessionStats' own autonomous gap roll — see A2), and
-        // the carry-forward this creates must not make DuoSnapshot render the SAME
-        // teammate's "Kick" as two separate people's rows.
-        var mine = new SessionStats();
-        var mate = new SessionStats { CharacterName = "Buddy" };
-        mine.Companion = mate;
-
-        var t0 = new DateTime(2026, 1, 1, 12, 0, 0);
-        // DamageDealtEvent.Source names the SKILL for a melee hit (SessionStats maps
-        // it through SkillName), not the character — "Kick" here IS the ability name
-        // that ends up on the DamageBySource row.
-        mate.Apply(new DamageDealtEvent(t0, "a target", 500, DamageKind.Melee, "Kick", false));
-        mine.Apply(new DamageDealtEvent(t0, "a target", 10, DamageKind.Melee, "Kick", false));
-        // 65 minutes later — a gap on the TEAMMATE's side only — rolls mate's own
-        // session internally (SessionStats.SessionGap = 60 min) without touching mine.
-        var t1 = t0.AddMinutes(65);
-        mate.Apply(new DamageDealtEvent(t1, "a target", 300, DamageKind.Melee, "Kick", false));
-        mine.Apply(new DamageDealtEvent(t1, "a target", 10, DamageKind.Melee, "Kick", false));
-
-        var duo = mine.DuoSnapshot(null, null);
-
-        // Exactly the rows mine's own melee ("Kick", untagged) plus ONE teammate-
-        // tagged "Kick" row carrying BOTH segments' hits — never two teammate rows,
-        // and never a nested "((teammate))"-shaped tag.
-        var kickRows = duo.DamageBySource.Where(sd => sd.Name.Contains("Kick")).ToList();
-        Assert.DoesNotContain(kickRows, sd => sd.Name.Contains("teammate", StringComparison.OrdinalIgnoreCase));
-        var mateKickRows = kickRows.Where(sd => sd.Name != "Kick").ToList();
-        var mateKick = Assert.Single(mateKickRows);
-        Assert.Equal(800, mateKick.Total);   // 500 + 300, one actor, one row
     }
 
     // ---- C5: the provenance tag must not be encoded as plain text into Name — it
@@ -1196,56 +833,5 @@ public class DuoStatsTests
 
         Assert.Equal(1, combined.PartyKillCount);
         Assert.Contains(combined.PartyKillsByTarget, nc => nc.Name == "Orc guard" && nc.Count == 1);
-    }
-
-    // ---- C7: mine's/the companion's snapshot and combat-span accounting must be
-    // captured ATOMICALLY (one lock hold each), not as two separate statements a
-    // concurrent hit could land between. Mutual exclusion is a structural
-    // guarantee once both reads share one `lock` block (Monitor's exclusivity, not
-    // a timing race to reproduce) — this exercises the real concurrent path under
-    // load: DuoSnapshot from one thread while the companion keeps taking damage on
-    // another, the shape the Mobile pump vs. the poll timer actually has. ----
-
-    [Fact]
-    public void DuoSnapshotStaysSelfConsistentUnderConcurrentCompanionActivity()
-    {
-        var mine = new SessionStats();
-        var mate = new SessionStats();
-        mine.Companion = mate;
-        var t0 = new DateTime(2026, 1, 1, 12, 0, 0);
-        mine.Apply(new DamageDealtEvent(t0, "a target", 100, DamageKind.Melee, "Kick", false));
-
-        using var stop = new CancellationTokenSource();
-        var writer = Task.Run(() =>
-        {
-            var t = t0;
-            while (!stop.IsCancellationRequested)
-            {
-                t = t.AddSeconds(1);
-                mate.Apply(new DamageDealtEvent(t, "a target", 10, DamageKind.Melee, "Kick", false));
-            }
-        });
-
-        try
-        {
-            for (var i = 0; i < 500; i++)
-            {
-                var duo = mine.DuoSnapshot(null, null);
-                // Whatever moment this snapshot landed on, CombatSeconds (the
-                // union's denominator) and DamageDealt (the numerator each side's
-                // OWN atomically-paired capture already accounts for) must agree
-                // closely enough that SessionDps is always a sane, finite,
-                // non-negative number — never NaN, never negative, never a wild
-                // spike from a numerator/denominator pulled from different moments.
-                Assert.False(double.IsNaN(duo.SessionDps));
-                Assert.True(duo.SessionDps >= 0);
-                Assert.True(duo.CombatSeconds >= 0);
-            }
-        }
-        finally
-        {
-            stop.Cancel();
-            writer.Wait(TimeSpan.FromSeconds(5));
-        }
     }
 }
