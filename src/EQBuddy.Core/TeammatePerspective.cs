@@ -192,8 +192,11 @@ public static class TeammatePerspective
             // own name) counts as N more points of ordinary outgoing damage against an
             // opponent that was never there. Refused rather than credited — the same
             // treatment the primary's own "You hurt yourself for N points." already gets:
-            // self-inflicted damage is never counted as damage DEALT.
-            if (rest.StartsWith(rawActor + " for ", StringComparison.Ordinal)) return [];
+            // self-inflicted damage is never counted as damage DEALT. Case-insensitive
+            // and whitespace-trimmed, consistent with how names are compared everywhere
+            // else in this file (the roster set is OrdinalIgnoreCase) — a byte-exact
+            // check would miss a case variant of the same self-recoil shape.
+            if (rest.TrimStart().StartsWith(rawActor.Trim() + " for ", StringComparison.OrdinalIgnoreCase)) return [];
             var (actor, isPet) = ResolveActor(rawActor);
             return [new TeammateLine(actor, $"You hit {rest}", isPet)];
         }

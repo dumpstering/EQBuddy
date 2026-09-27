@@ -92,17 +92,34 @@ public sealed class DerivedTeammates
     private (int RosterVersion, string? Primary, string? Pet) _rosterKey = (-1, null, null);
 
     /// <summary>A short ring buffer of the most recently observed raw primary lines
-    /// (timestamp + already-normalized message), oldest first. Exists for exactly one
-    /// purpose: a name that <see cref="TeammateRoster"/> recognizes via the kill-plus-
-    /// party-XP correlation (<see cref="TeammateRoster.PartyKillsToJoin"/>) is recognized
-    /// on the KILL line ("X has been slain by Garg!") — a line that carries no damage of
-    /// its own. The hit that actually finished the mob ("Garg punches X for N points of
-    /// damage. (Finishing Blow)") is a SEPARATE, EARLIER log line, so by the time the kill
-    /// line updates the roster, that hit has already been read with Garg absent from it
-    /// and its damage was never rewritten for anybody. See <see cref="ReplayBufferedLinesFor"/>.
+    /// (a monotonic sequence number, timestamp, and already-normalized message), oldest
+    /// first. Exists for exactly one purpose: a name that <see cref="TeammateRoster"/>
+    /// recognizes via the kill-plus-party-XP correlation
+    /// (<see cref="TeammateRoster.PartyKillsToJoin"/>) is recognized on the KILL line
+    /// ("X has been slain by Garg!") — a line that carries no damage of its own. The hit
+    /// that actually finished the mob ("Garg punches X for N points of damage. (Finishing
+    /// Blow)") is a SEPARATE, EARLIER log line, so by the time the kill line updates the
+    /// roster, that hit has already been read with Garg absent from it and its damage was
+    /// never rewritten for anybody. See <see cref="ReplayBufferedLinesFor"/>.
     /// Bounded and cheap: a handful of short strings, cleared on every session/roster
     /// reset so nothing here ever reaches across a session boundary.</summary>
-    private readonly Queue<(DateTime Ts, string Msg)> _recentLines = new();
+    private readonly Queue<(long Seq, DateTime Ts, string Msg)> _recentLines = new();
+
+    /// <summary>The next sequence number to stamp onto a buffered line — see
+    /// <see cref="_recentLines"/> and <see cref="_replayConsumedThrough"/>.</summary>
+    private long _nextLineSeq;
+
+    /// <summary>Per actor, the highest buffered-line sequence number
+    /// <see cref="ReplayBufferedLinesFor"/> has already scanned for them. A name can be
+    /// promoted by <see cref="TeammateRoster.LastPartyKillPromotion"/> more than once in
+    /// one session (leave, then re-earn the correlation from scratch) — if that second
+    /// promotion happens while the FIRST promotion's own trigger line is still sitting in
+    /// the ring buffer, replaying the whole buffer again would credit that same line to
+    /// the same actor a second time. Tracked per actor, never cleared on a roster leave
+    /// (only on a full session/roster reset, alongside the buffer itself), so a line is
+    /// replay-credited to a given name at most once, no matter how many times that name
+    /// is promoted.</summary>
+    private readonly Dictionary<string, long> _replayConsumedThrough = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Comfortably covers the widest gap measured between a finishing-blow hit
     /// and the "has been slain by" line that follows it (faction-adjustment lines print
@@ -286,7 +303,7 @@ public sealed class DerivedTeammates
                         _version++;
                     }
 
-            _recentLines.Enqueue((ts, msg));
+            _recentLines.Enqueue((_nextLineSeq++, ts, msg));
             while (_recentLines.Count > RecentLineBufferCapacity) _recentLines.Dequeue();
         }
     }
@@ -298,12 +315,23 @@ public sealed class DerivedTeammates
     /// never the full current roster — so a buffered line naming a teammate who was
     /// already recognized at the time (and so already correctly credited once) cannot
     /// be credited to them a second time; only the newly-recognized name can still be
-    /// missing anything from that line. Caller holds _gate.</summary>
+    /// missing anything from that line.
+    ///
+    /// Only lines with a sequence number PAST <see cref="_replayConsumedThrough"/> for
+    /// this name are ever scanned, and that marker is advanced to the buffer's current
+    /// tail before returning — so if this same name is promoted a SECOND time later in
+    /// the session (a leave, then a fresh kill-plus-party-XP correlation) while the
+    /// first promotion's own trigger line is still sitting in the ring buffer, that line
+    /// is never scanned again and never credited twice. Caller holds _gate.</summary>
     private void ReplayBufferedLinesFor(string name, string? primaryName)
     {
         var single = new[] { name };
-        foreach (var (bts, bmsg) in _recentLines)
+        var consumedThrough = _replayConsumedThrough.GetValueOrDefault(name, -1L);
+        var maxSeqSeen = consumedThrough;
+        foreach (var (seq, bts, bmsg) in _recentLines)
         {
+            if (seq <= consumedThrough) continue;
+            if (seq > maxSeqSeen) maxSeqSeen = seq;
             if (!ContainsAnyName(bmsg, single)) continue;
             foreach (var line in TeammatePerspective.Rewrite(bmsg, primaryName ?? "", single))
             {
@@ -325,6 +353,7 @@ public sealed class DerivedTeammates
                 _version++;
             }
         }
+        _replayConsumedThrough[name] = maxSeqSeen;
     }
 
     // Caller holds _gate.
@@ -503,6 +532,7 @@ public sealed class DerivedTeammates
             _promoted.Clear();
             _deaths.Clear();
             _recentLines.Clear();
+            _replayConsumedThrough.Clear();
             _generation++;
             _version++;
         }
@@ -527,6 +557,7 @@ public sealed class DerivedTeammates
             _promoted.Clear();
             _deaths.Clear();
             _recentLines.Clear();
+            _replayConsumedThrough.Clear();
             _generation++;
             _version++;
         }

@@ -101,4 +101,85 @@ public sealed class TeammateRosterTriggerHitTests
         Assert.Equal(42, garg.SpellDamage);
         Assert.Equal(42, garg.DamageDealt);
     }
+
+    /// <summary>
+    /// Codex QA (post-merge review of 4357760c) MAJOR finding: the replay buffer that
+    /// fixes the trigger-hit bug above has no memory of what it already replayed. If
+    /// Garg leaves the group (clearing TeammateRoster's auto-detected set and party-kill
+    /// counters) and then earns a FRESH kill-plus-party-XP correlation from scratch while
+    /// his first promotion's own trigger line is still sitting in the 32-line ring
+    /// buffer, TeammateRoster.LastPartyKillPromotion fires again for "Garg" and the old
+    /// replay would re-scan the WHOLE buffer — crediting the same finishing-blow line to
+    /// Garg a second time.
+    /// </summary>
+    [Fact]
+    public void ALeaveThenRePromotionWithinTheBufferWindowDoesNotDoubleCreditTheOldTriggerLine()
+    {
+        var duo = new OwnLogDuo();
+        var t = T;
+        void Feed(string msg) => duo.Feed(t = t.AddSeconds(1), msg);
+
+        // First promotion, exactly like TheHitThatTriggersRosterRecognitionIsCreditedToThatTeammate:
+        // the trigger line (177 damage) precedes the party-XP/kill lines that promote Garg.
+        Feed("You gain party experience! (1.000%)");
+        Feed("A rat has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A bat has been slain by Garg!");
+        Feed("Garg punches a flouting gargoyle for 177 points of damage. (Finishing Blow)");
+        Feed("You gain party experience! (1.581%)");
+        Feed("A flouting gargoyle has been slain by Garg!");
+        Assert.Contains("Garg", duo.Teammates.AutoDetected);
+        Assert.Equal(177, duo.Teammates.Snapshots()["Garg"].MeleeDamage);
+
+        // Garg leaves the group — TeammateRoster.Leave clears auto-detection AND the
+        // party-kill correlation counters for him.
+        Feed("Garg has left the group.");
+        Assert.DoesNotContain("Garg", duo.Teammates.AutoDetected);
+
+        // He earns a FRESH kill-plus-party-XP correlation from scratch (no group line
+        // this time — purely the correlation, same mechanism as the first promotion).
+        // The old 177-damage trigger line is still well within the 32-line ring buffer
+        // (only 8 lines back at this point).
+        Feed("You gain party experience! (1.000%)");
+        Feed("A newt has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A toad has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A slug has been slain by Garg!");
+        Assert.Contains("Garg", duo.Teammates.AutoDetected);
+
+        // The bug: this came back 354 (177 credited twice) instead of 177.
+        Assert.Equal(177, duo.Teammates.Snapshots()["Garg"].MeleeDamage);
+    }
+
+    /// <summary>
+    /// Codex QA MINOR finding: the self-recoil guard for bug #2 compared the target text
+    /// to the actor's name byte-exact, so a case variant of the same shape ("garg" vs
+    /// "Garg") would slip through and still be double-counted as outgoing damage.
+    /// </summary>
+    [Fact]
+    public void ASelfInflictedSpellRecoilIsRecognizedRegardlessOfCase()
+    {
+        var duo = new OwnLogDuo();
+        var t = T;
+        void Feed(string msg) => duo.Feed(t = t.AddSeconds(1), msg);
+
+        Feed("You gain party experience! (1.000%)");
+        Feed("A rat has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A bat has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A gnoll has been slain by Garg!");
+        Assert.Contains("Garg", duo.Teammates.AutoDetected);
+
+        Feed("Garg hit a will pillager for 42 points of magic damage by Lifebite.");
+        // A case-variant self-recoil line — TeammatePerspective only ever rewrites lines
+        // that name the exact roster entry "Garg" as the actor, so the target half alone
+        // varies here to isolate the comparison this finding is about.
+        Feed("Garg hit garg for 6 points of magic damage by Lifebite.");
+
+        var garg = duo.Teammates.Snapshots()["Garg"];
+        Assert.Equal(42, garg.SpellDamage);
+        Assert.Equal(42, garg.DamageDealt);
+    }
 }
