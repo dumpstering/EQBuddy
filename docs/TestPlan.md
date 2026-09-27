@@ -50,6 +50,10 @@ table.
 | `DuoVersion` always equals the combined snapshot's `Version`; the pump fed any other number leaks pushes forever | **Auto** — `DuoSnapshotTests.DuoVersionEqualsTheDuoSnapshotsVersionInEveryState`, `.ThePumpLeaksPushesOnlyWhenTheGateReadsADifferentVersionThanItObserves` |
 | Archives, checkpoints and the wiki pack stay the watched character alone | **Auto** — `DuoSnapshotTests.ArchivesStaySoloWhileTheDisplayCombines` |
 | A hand-typed name is normalised to the log's spelling or refused with a reason | **Auto** — `TeammatesPresentationTests` |
+| **A re-derivation (any manual-name edit) rebuilds membership in log order**: a member who joined late is not credited with what they did before joining; leaves and rejoins are followed; review mode replays only from where the Select started | **Auto** — `TeammateRederiveTests.ARederiveDoesNotCreditAMemberWithWhatTheyDidBeforeJoining` (prove-failed on the pre-fix watcher), `.ARederiveFollowsLeavesAndRejoinsInLogOrder`, `.ARederiveInReviewModeStartsWhereTheSelectStarted` |
+| **A re-derivation commits in one step or not at all**: an unreadable log keeps the live teammates; a staged replay is invisible until committed; a session that ended meanwhile refuses the commit | **Auto** — `TeammateRederiveTests.ALogThatCannotBeReadLeavesTheTeammatesAsTheyWere` (prove-failed on the pre-fix watcher), `.AReplayIsInvisibleUntilCommittedAndDiscardedIfTheSessionEnded` |
+| **A teammate's warder adds damage but never the owner's hits, crits or misses** — the primary's own pet rule | **Auto** — `TeammateRederiveTests.ATeammatesWarderAddsDamageButNotToTheOwnersAccuracyCounters` (prove-failed on the pre-fix derivation) |
+| The keep-alive tick skips a line stamped the same second as a teammate's last event, and a quiet teammate still rolls only with the primary | **Auto** — `TeammateRederiveTests.AQuietTeammateStillRollsOnlyWithThePrimary` |
 
 ## 2. What the numbers mean
 

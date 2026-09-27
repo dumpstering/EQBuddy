@@ -150,6 +150,17 @@ public sealed class TeammateRoster
         Version++;
     }
 
+    /// <summary>A copy that knows no member yet but keeps every known-NPC exclusion — the
+    /// starting point for re-deriving a session from the first line the watcher read, so
+    /// membership is rebuilt in log order instead of whitelisting today's members
+    /// retroactively.</summary>
+    internal TeammateRoster WithoutMembers()
+    {
+        var copy = new TeammateRoster();
+        copy._everNpc.UnionWith(_everNpc);
+        return copy;
+    }
+
     /// <summary>A hand-typed roster entry ("garg", "GARG") is canonicalised to the
     /// shape an EQ character name actually has (one capitalised word, e.g. "Garg")
     /// before it enters the roster set. Without this, <see cref="TeammatePerspective"/>'s

@@ -46,8 +46,17 @@ public sealed class DerivedTeammates
 {
     private readonly object _gate = new();
     private readonly SessionStats? _primary;
-    private readonly TeammateRoster _roster = new();
+    private TeammateRoster _roster = new();
     private readonly Dictionary<string, SessionStats> _stats = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Per known teammate, the timestamp of the last event applied to their
+    /// instance — the keep-alive tick in <see cref="ObserveCore"/> skips a line stamped
+    /// the same second, which changes nothing observable.</summary>
+    private readonly Dictionary<string, DateTime> _lastApplied = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Moves on every session end (<see cref="ResetSession"/>, <see cref="Reset"/>),
+    /// so a re-derivation that raced one is discarded rather than committed over it.</summary>
+    private long _generation;
 
     /// <summary>Per teammate, the primary's party-kill rows each of THEIR promoted kills
     /// bumped (target and killer, exactly as the primary parsed them).</summary>
@@ -77,6 +86,16 @@ public sealed class DerivedTeammates
     {
         _primary = primary;
         primary.SessionRolledOver += ResetSession;
+    }
+
+    /// <summary>A re-derivation's staging instance: fed from <paramref name="primary"/>'s
+    /// log like the production one, but never subscribed to its rollover, and seen by
+    /// nobody until <see cref="CommitReplay"/> moves its contents across.</summary>
+    private DerivedTeammates(SessionStats primary, TeammateRoster roster, IReadOnlyCollection<string> manualNames)
+    {
+        _primary = primary;
+        _roster = roster;
+        _manualNames = manualNames;
     }
 
     /// <summary>The names the player added by hand in Options → Behavior
@@ -164,11 +183,18 @@ public sealed class DerivedTeammates
             // primary's own: a line the primary applied an event for ticks each
             // teammate that got nothing of its own from it, so a teammate who is quiet
             // while the primary plays on is never rolled over on their own.
+            //
+            // A tick stamped the same second as the last event this teammate got is
+            // skipped: it could neither roll the session, move the last-event time nor
+            // make a fight stale, and one tick per line per teammate was the bulk of
+            // what deriving teammates added to a long log's initial ingest.
             if (primaryEvent is not null)
                 foreach (var (name, stats) in _stats)
-                    if (appliedTo is null || !appliedTo.Contains(name))
+                    if ((appliedTo is null || !appliedTo.Contains(name))
+                        && !(_lastApplied.TryGetValue(name, out var last) && last == ts))
                     {
                         stats.Apply(new RawLineEvent(ts, msg));
+                        _lastApplied[name] = ts;
                         _version++;
                     }
         }
@@ -190,6 +216,7 @@ public sealed class DerivedTeammates
             // the owner's kill, as the primary's own pet kills already do.
             if (line.IsPet) evt = TagPet(evt);
             GetOrCreate(line.Actor).Apply(evt);
+            _lastApplied[line.Actor] = ts;
             _version++;
             appliedTo.Add(line.Actor);
             // The same line was a party kill in the primary's own rows: remember exactly
@@ -200,11 +227,18 @@ public sealed class DerivedTeammates
         return appliedTo;
     }
 
+    /// <summary>A pet's hit is damage the owner dealt, but not a swing the owner took:
+    /// <c>IsAux</c> keeps it out of the hit, crit and special-hit counters and the spell
+    /// classification, proc and burst paths — exactly what the primary's own
+    /// <c>AddPetDamage</c> keeps its pet out of — while it still reaches DamageDealt, the
+    /// timeline, combat and its tagged ability row. A pet's miss is not credited to the
+    /// owner's accuracy either (the primary's own pet misses are not): it becomes a
+    /// third-party miss, which only keeps an open combat window going.</summary>
     private static GameEvent TagPet(GameEvent evt) => evt switch
     {
-        DamageDealtEvent d => d with { Source = TagName(d.Source) },
+        DamageDealtEvent d => d with { Source = TagName(d.Source), IsAux = true },
         HealEvent h => h with { Spell = TagName(h.Spell) },
-        MissEvent m when m.Ability.Length > 0 => m with { Ability = TagName(m.Ability) },
+        MissEvent m => new ThirdMissEvent(m.Time, TagName("")),
         _ => evt,
     };
 
@@ -325,8 +359,10 @@ public sealed class DerivedTeammates
         lock (_gate)
         {
             _stats.Clear();
+            _lastApplied.Clear();
             _promoted.Clear();
             _deaths.Clear();
+            _generation++;
             _version++;
         }
     }
@@ -340,9 +376,63 @@ public sealed class DerivedTeammates
         {
             _roster.Reset();
             _stats.Clear();
+            _lastApplied.Clear();
             _promoted.Clear();
             _deaths.Clear();
+            _generation++;
             _version++;
+        }
+    }
+
+    /// <summary>Starts a re-derivation of the current session: a staging instance with
+    /// the manual names as they are now and a roster that knows no member yet (the
+    /// known-NPC exclusions are kept, as every reset keeps them), plus the generation it
+    /// must still match to be committed. The caller feeds the staging instance every line
+    /// since the log was selected — <see cref="ObserveRosterLine"/> before the session
+    /// start, so join and leave lines rebuild membership in log order, and
+    /// <see cref="ObservePrimaryLine"/> from it — then calls <see cref="CommitReplay"/>.</summary>
+    internal (DerivedTeammates Staging, long Generation) BeginReplay()
+    {
+        var primary = _primary ?? throw new InvalidOperationException(
+            "BeginReplay needs the primary-owned instance (SessionStats.Teammates).");
+        lock (_gate)
+            return (new DerivedTeammates(primary, _roster.WithoutMembers(), ManualNames), _generation);
+    }
+
+    /// <summary>A line from before the current session: only its group lines matter —
+    /// whatever it credited was cleared when the session rolled.</summary>
+    internal void ObserveRosterLine(string msg)
+    {
+        var primaryName = _primary?.CharacterName;
+        lock (_gate) _roster.Observe(msg, primaryName);
+    }
+
+    /// <summary>Replaces this instance's teammates, corrections and roster with what
+    /// <paramref name="staging"/> derived, in one step under the lock and with one version
+    /// bump, so no reader ever sees a half-replayed session. Refused (false) when a session
+    /// ended since <see cref="BeginReplay"/>: the replay described a session that is gone.</summary>
+    internal bool CommitReplay(DerivedTeammates staging, long generation)
+    {
+        lock (_gate)
+        {
+            if (generation != _generation) return false;
+            lock (staging._gate)
+            {
+                _roster = staging._roster;
+                _rosterKey = (-1, null, null, null);
+                Replace(_stats, staging._stats);
+                Replace(_lastApplied, staging._lastApplied);
+                Replace(_promoted, staging._promoted);
+                Replace(_deaths, staging._deaths);
+            }
+            _version++;
+            return true;
+        }
+
+        static void Replace<T>(Dictionary<string, T> into, Dictionary<string, T> from)
+        {
+            into.Clear();
+            foreach (var (k, v) in from) into[k] = v;
         }
     }
 

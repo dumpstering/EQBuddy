@@ -293,7 +293,7 @@ public sealed partial class LogWatcher : IDisposable
             InitialIngestDone = false;
             _stats.ClearCharacterState();
             _stats.Reset();
-            _stats.Teammates.Reset();
+            ResetTeammates();
             // Every Select is a replay starting over; the ledger's boundary-second
             // counters must not carry over from the previous pass (finding 3).
             SpawnPoints?.ReplayStarting();

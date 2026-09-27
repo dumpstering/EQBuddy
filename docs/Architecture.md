@@ -457,13 +457,24 @@ The fork derives them:
   reflection). The production instance is `SessionStats.Teammates`, owned by the watched
   character's own session. `LogWatcher`'s poll hands it every line, with the event the
   primary just applied (`_stats.Teammates.ObservePrimaryLine(ts, msg, evt)`), on the poll
-  thread under the watcher lock; `Select` resets it; the primary's own rollover, and the
+  thread under the watcher lock; `Select` resets it (`ResetTeammates()`, which also records
+  where the Select started reading); the primary's own rollover, and the
   manual "Reset session", reset the teammates' sessions (the roster is kept — group lines do not repeat after a quiet hour).
   That is the entire `LogWatcher.cs` diff: `partial` and two lines. A fault while deriving
   a teammate is logged once and never abandons the poll chunk.
 - **Manual names mid-session** — `LogWatcher.RederiveTeammatesAsync` (`LogWatcher.Duo.cs`)
   re-derives the current session from the bytes the watcher has already read, so a name
-  added in Options counts from the session's start and no line is fed twice.
+  added in Options counts from the session's start and no line is fed twice. It replays
+  from where the Select started, with a roster that knows no member yet: lines before the
+  session start only rebuild membership in log order, so a member who joined late is not
+  credited with what they did as a bystander. The replay goes into a staging
+  `DerivedTeammates` and is committed in one step with one version bump
+  (`BeginReplay`/`CommitReplay`); an unreadable log leaves the live teammates untouched,
+  and a session that ended meanwhile refuses the commit.
+- **A teammate's pet** — "Garg`s warder hits…" folds into Garg as a "(pet)"-tagged row.
+  Its hits are applied as `IsAux`, so they reach damage, the timeline, combat and the row
+  but not the owner's hit/crit/special-hit counters, and its misses are not credited to
+  the owner's accuracy — the same line the primary's own `AddPetDamage` draws.
 
 **Combining is display-only**: `SessionStats.DuoSnapshot` → `TeammateCombine.Combine`,
 folding `DuoStats.Combine` once per teammate. `MainWindow.BuildSnapshot()` calls
