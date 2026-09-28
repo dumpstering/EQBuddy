@@ -87,6 +87,35 @@ public class PerPersonDpsTests
         Assert.Equal(20, rows[2].DamageDealt);
     }
 
+    /// <summary>
+    /// <see cref="SessionStats.PerPersonDps"/>'s own doc comment promises "one row per
+    /// CURRENT teammate" — a teammate who has left the group is no longer one, so once they
+    /// are the ONLY teammate this session has known, the panel must read as solo again (a
+    /// single-element list), the same "hidden panel" shape solo has always had
+    /// (<see cref="EQBuddy.UI.Shared.PerPersonDpsPresentation.Rows"/> hides anything under
+    /// two rows). <see cref="DerivedTeammates.SnapshotsFor"/> enumerates every teammate ever
+    /// accumulated this session rather than the CURRENT roster, so without a fix Garg's row
+    /// never goes away even though he left minutes ago and the primary has been soloing
+    /// since.
+    /// </summary>
+    [Fact]
+    public void ADepartedTeammateStopsAppearingAsACurrentPartner()
+    {
+        var duo = new OwnLogDuo()
+            .Feed(T, "Garg has joined the group.")
+            .Feed(T.AddSeconds(1), "You slash a gnoll for 10 points of damage.")
+            .Feed(T.AddSeconds(2), "Garg slashes a gnoll for 20 points of damage.")
+            .Feed(T.AddSeconds(3), "Garg has left the group.")
+            .Feed(T.AddSeconds(4), "You slash a gnoll for 15 points of damage.")
+            .Feed(T.AddSeconds(5), "You slash a gnoll for 15 points of damage.");
+
+        var rows = duo.Primary.PerPersonDps(null, null);
+
+        var mine = Assert.Single(rows);
+        Assert.Equal(OwnLogDuo.PrimaryName, mine.Name);
+        Assert.DoesNotContain(rows, r => r.Name == "Garg");
+    }
+
     [Fact]
     public void SameWindowAndRulesAsTheCallerAreHonoured()
     {

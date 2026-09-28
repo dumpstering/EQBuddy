@@ -53,9 +53,20 @@ public sealed partial class SessionStats
 
     /// <summary>This instance's own row (its plain <see cref="Snapshot(TimeSpan?, IReadOnlyList{TrackedRule}?)"/>
     /// — the SOLO numbers, not <see cref="DuoSnapshot"/>'s combined one) first, then one
-    /// row per current teammate off THEIR OWN isolated instance, name-sorted. Same window
+    /// row per CURRENT teammate off THEIR OWN isolated instance, name-sorted. Same window
     /// and rules as the caller's own display snapshot, so a row never disagrees with what
-    /// fed it. Solo (no teammates known) answers a single-element list.</summary>
+    /// fed it. Solo (no teammates known, or every known teammate has since left) answers a
+    /// single-element list.
+    ///
+    /// <b>"Current" is <see cref="DerivedTeammates.CountedNow"/>'s roster, not
+    /// <see cref="DerivedTeammates.SnapshotsFor"/>'s full set</b> — the latter is keyed on
+    /// <c>KnownTeammates</c> (every name this session has ever accrued anything for, on
+    /// purpose: it is what lets a departed teammate's contribution keep counting toward the
+    /// COMBINED <see cref="DuoSnapshot"/> for the rest of the session). This readout is a
+    /// different question — "who is presented as a partner playing with me right now" — so
+    /// a name off the current roster (left, disbanded, logged out) is filtered out here even
+    /// though its accrued numbers are still sitting in <c>KnownTeammates</c> for the combine
+    /// to keep reading.</summary>
     public IReadOnlyList<PersonDps> PerPersonDps(TimeSpan? recentWindow, IReadOnlyList<TrackedRule>? rules)
     {
         var mine = Snapshot(recentWindow, rules);
@@ -64,8 +75,17 @@ public sealed partial class SessionStats
             new(CharacterName is { Length: > 0 } n ? n : "You", mine.SessionDps, mine.CurrentDps, mine.DamageDealt),
         };
         if (Volatile.Read(ref _teammates) is { } teammates)
+        {
+            // Wrapped explicitly rather than relying on CountedNow()'s own comparer: its
+            // declared return type is IReadOnlyCollection<string>, whose only Contains is
+            // the LINQ extension (ordinal, case-SENSITIVE) unless the concrete instance is
+            // asked for as a set — a silent case-sensitivity mismatch here would bring the
+            // exact bug back for a name whose casing drifted between roster and stats.
+            var current = new HashSet<string>(teammates.CountedNow(), StringComparer.OrdinalIgnoreCase);
             foreach (var (name, snap) in teammates.SnapshotsFor(recentWindow, rules))
-                rows.Add(new PersonDps(name, snap.SessionDps, snap.CurrentDps, snap.DamageDealt));
+                if (current.Contains(name))
+                    rows.Add(new PersonDps(name, snap.SessionDps, snap.CurrentDps, snap.DamageDealt));
+        }
         return rows;
     }
 
