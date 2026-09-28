@@ -12,14 +12,19 @@ namespace EQBuddy.UI.Shared;
 public static class PerPersonDpsPresentation
 {
     /// <summary>One <see cref="CardRow"/> per person, in the order given — or an EMPTY
-    /// list with fewer than two people (solo, no teammates known), which the caller reads
-    /// as "hide the panel entirely" (<c>EqCardRows.FillVisible</c>'s contract): solo must
-    /// look exactly like it did before this readout existed.</summary>
+    /// list with fewer than two people (solo, no teammate has ever been known), which the
+    /// caller reads as "hide the panel entirely" (<c>EqCardRows.FillVisible</c>'s contract):
+    /// solo must look exactly like it did before this readout existed. A departed teammate
+    /// (<see cref="SessionStats.PersonDps.IsCurrent"/> false) still counts toward that
+    /// two-or-more test and still draws its own row — the panel stays up as long as a row
+    /// does, tagged "(left)" via <see cref="CardRow.Note"/> (a separate run, same convention
+    /// as the loot list's "(Foraged)"/"(Merged)") rather than baked into the name text
+    /// itself.</summary>
     public static IReadOnlyList<CardRow> Rows(IReadOnlyList<SessionStats.PersonDps> people)
     {
         if (people.Count < 2) return [];
         var rows = new List<CardRow>(people.Count);
-        foreach (var p in people) rows.Add(new CardRow(p.Name, Line(p)));
+        foreach (var p in people) rows.Add(new CardRow(p.Name, Line(p), Note: p.IsCurrent ? null : "left"));
         return rows;
     }
 

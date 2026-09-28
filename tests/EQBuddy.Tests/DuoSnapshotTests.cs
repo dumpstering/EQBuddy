@@ -233,6 +233,32 @@ public class DuoSnapshotTests
         Assert.Equal(7, duo.Combined().DamageDealt);
     }
 
+    /// <summary>
+    /// The COMBINED <see cref="SessionStats.DuoSnapshot"/> total keeps counting what a
+    /// teammate did for the rest of the primary's session even after they leave the group,
+    /// per <see cref="DerivedTeammates.KnownTeammates"/>'s own documented contract ("a name
+    /// that left the group keeps what it already accrued"). <see cref="SessionStats.PerPersonDps"/>
+    /// agrees rather than disagreeing with this: it keeps a departed teammate's row too
+    /// (tagged <see cref="SessionStats.PersonDps.IsCurrent"/> = false — see
+    /// <see cref="PerPersonDpsTests.ADepartedTeammateKeepsItsRowTaggedNotCurrent"/>), so the
+    /// panel's own rows still add up to exactly this combined total instead of silently
+    /// falling short the moment somebody left.
+    /// </summary>
+    [Fact]
+    public void ADepartedTeammatesAccruedDamageStaysInTheCombinedTotalForTheSession()
+    {
+        var duo = new OwnLogDuo()
+            .Feed(T, "Garg has joined the group.")
+            .Feed(T.AddSeconds(1), "You slash a gnoll for 10 points of damage.")
+            .Feed(T.AddSeconds(2), "Garg slashes a gnoll for 20 points of damage.")
+            .Feed(T.AddSeconds(3), "Garg has left the group.")
+            .Feed(T.AddSeconds(4), "You slash a gnoll for 15 points of damage.");
+
+        Assert.DoesNotContain("Garg", duo.Teammates.AutoDetected);
+        // 10 + 20 + 15 — Garg's 20 is still in the combined total though he has left.
+        Assert.Equal(45, duo.Combined().DamageDealt);
+    }
+
     /// <summary>What MainWindow's "Reset session" does: the primary's Reset plus the
     /// teammates' ResetSession. Nothing of the old session survives on either side, and
     /// the roster does — the group did not change.</summary>

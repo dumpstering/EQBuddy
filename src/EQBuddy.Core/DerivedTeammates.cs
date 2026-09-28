@@ -386,6 +386,18 @@ public sealed class DerivedTeammates
                 // "now" — never allow it to move the bookkeeping BACKWARDS, which would
                 // make a later keep-alive tick see a stale, too-early "last applied"
                 // time and could reopen a gap that was never really there.
+                //
+                // In practice this max() is defensive rather than load-bearing for the
+                // leave/re-promotion shape it was written for: the promoting kill line
+                // that triggers this replay is always fed immediately afterward through
+                // the NORMAL live path (ApplyRewrittenLines below), which unconditionally
+                // sets _lastApplied[name] forward to that line's own timestamp regardless
+                // of what this replay left behind. So the promoting line's own write
+                // already re-forwards the clock every time this method is reachable today
+                // — this guard only matters if a future caller ever replays buffered
+                // lines WITHOUT a promoting line applied right after (see
+                // TeammateRosterTriggerHitTests.ALeaveThenRePromotionReplayLeavesCombatBookkeepingConsistent,
+                // which cannot discriminate the two for exactly this reason).
                 if (!_lastApplied.TryGetValue(line.Actor, out var prevApplied) || bts > prevApplied)
                     _lastApplied[line.Actor] = bts;
                 _version++;

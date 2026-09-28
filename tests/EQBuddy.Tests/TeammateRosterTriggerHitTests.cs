@@ -181,6 +181,7 @@ public sealed class TeammateRosterTriggerHitTests
         var garg = duo.Teammates.Snapshots()["Garg"];
         Assert.Equal(42, garg.SpellDamage);
         Assert.Equal(42, garg.DamageDealt);
+        Assert.Equal(6, garg.DamageTaken);
     }
 
     /// <summary>
@@ -310,15 +311,25 @@ public sealed class TeammateRosterTriggerHitTests
     }
 
     /// <summary>
-    /// Independent review REJECTED finding #2 (MINOR): out-of-order application. The
-    /// "keep every known teammate's session clock moving" tick in <c>ObserveCore</c> fires
-    /// for every KNOWN teammate on every primary line, whether or not they are on the
-    /// current roster — so a teammate who has left keeps having <c>_lastApplied</c> pushed
-    /// forward while absent (their own <see cref="SessionStats"/> keeps getting quiet
-    /// keep-alive ticks with the CURRENT timestamp). When they are re-promoted, the ring
-    /// buffer replay applies a hit stamped EARLIER than that already-advanced clock.
-    /// Required: <c>_lastApplied[name]</c> must never move backwards (use max), and the
-    /// replay must not leave the teammate's own combat/session bookkeeping corrupted.
+    /// Regression guard for combat/session bookkeeping across a leave-then-re-promotion
+    /// cycle, covering the shape independent review's finding #2 (MINOR, REJECTED)
+    /// described: the "keep every known teammate's session clock moving" tick in
+    /// <c>ObserveCore</c> fires for every KNOWN teammate on every primary line, whether or
+    /// not they are on the current roster — so a teammate who has left keeps having
+    /// <c>_lastApplied</c> pushed forward while absent — and when they are re-promoted, the
+    /// ring buffer replay applies a hit stamped EARLIER than that already-advanced clock.
+    ///
+    /// <b>This is NOT a discriminating proof of the <c>_lastApplied</c> max() guard</b>
+    /// (see <see cref="DerivedTeammates.ReplayBufferedLinesFor"/>'s own comment on why): it
+    /// passes unchanged even on 1158d20d, before that guard existed, because the promoting
+    /// kill line itself is applied immediately afterward through the NORMAL live path
+    /// (<see cref="DerivedTeammates.ApplyRewrittenLines"/>), which unconditionally sets
+    /// <c>_lastApplied[name]</c> forward to "now" regardless of what the replay left behind.
+    /// So the final, observable bookkeeping below is dominated by that live-path write
+    /// either way, and this test cannot tell a guarded replay from an unguarded one. What it
+    /// DOES pin is that the whole leave/re-promotion round-trip — the buffered, backdated
+    /// trigger hit plus the immediately-following live promotion — leaves the teammate's
+    /// damage total, last-applied timestamp and combat-second accounting exactly right.
     ///
     /// Values below are hand-verified against the fixed algorithm's own (documented) rules
     /// rather than a live "always on the roster" oracle: an always-on-roster oracle would
@@ -330,7 +341,7 @@ public sealed class TeammateRosterTriggerHitTests
     /// comparing against it would fail on a difference that is correct, not a regression.
     /// </summary>
     [Fact]
-    public void AReplayedOlderHitIntoAnAlreadyKnownTeammateDoesNotCorruptTheirCombatBookkeeping()
+    public void ALeaveThenRePromotionReplayLeavesCombatBookkeepingConsistent()
     {
         var duo = new OwnLogDuo();
         var t = T;

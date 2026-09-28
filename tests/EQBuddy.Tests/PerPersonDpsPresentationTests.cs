@@ -10,8 +10,8 @@ namespace EQBuddy.Tests;
 /// </summary>
 public class PerPersonDpsPresentationTests
 {
-    private static SessionStats.PersonDps P(string name, double session, double current, long dealt) =>
-        new(name, session, current, dealt);
+    private static SessionStats.PersonDps P(string name, double session, double current, long dealt,
+        bool isCurrent = true) => new(name, session, current, dealt, isCurrent);
 
     [Fact]
     public void SoloWithNoTeammatesIsHiddenEntirely()
@@ -82,5 +82,52 @@ public class PerPersonDpsPresentationTests
         Assert.DoesNotContain("1196", rows[0].Value);   // 176 + 1020, the summed-rate bug shape
         Assert.Contains("1020 dps", rows[1].Value);
         Assert.DoesNotContain("2,334,567", rows[1].Value);   // the summed-damage bug shape
+    }
+
+    /// <summary>A departed row (<see cref="SessionStats.PersonDps.IsCurrent"/> false) draws
+    /// its <see cref="CardRow.Note"/> as "left" — <c>EqCardRows.Build</c> wraps a non-empty
+    /// <see cref="CardRow.Note"/> in parentheses itself ("(Foraged)", "(Merged)"), so the
+    /// raw value here is the bare word, not "(left)".</summary>
+    [Fact]
+    public void ADepartedRowIsTaggedLeft()
+    {
+        var rows = PerPersonDpsPresentation.Rows(
+        [
+            P("Smargush", 176, 0, 1_234_567),
+            P("Garg", 20, 0, 20, isCurrent: false),
+        ]);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Null(rows[0].Note);
+        Assert.Equal("left", rows[1].Note);
+    }
+
+    /// <summary>A current teammate carries no "(left)" tag — only a departed one does.</summary>
+    [Fact]
+    public void ARejoinedTeammateRowCarriesNoTag()
+    {
+        var rows = PerPersonDpsPresentation.Rows(
+        [
+            P("Smargush", 176, 0, 1_234_567),
+            P("Garg", 1020, 0, 1_100_000, isCurrent: true),
+        ]);
+
+        Assert.Null(rows[1].Note);
+    }
+
+    /// <summary>The panel's own "hide when under two rows" rule is unaffected by departure —
+    /// a departed teammate still occupies a row, so the primary-plus-one-departed shape
+    /// stays at two rows and the panel stays visible (<c>EqCardRows.FillVisible</c> hides
+    /// only on an EMPTY list).</summary>
+    [Fact]
+    public void APanelWithOnlyADepartedTeammateStaysVisible()
+    {
+        var rows = PerPersonDpsPresentation.Rows(
+        [
+            P("Smargush", 176, 0, 1_234_567),
+            P("Garg", 20, 0, 20, isCurrent: false),
+        ]);
+
+        Assert.Equal(2, rows.Count);
     }
 }
