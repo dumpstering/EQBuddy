@@ -88,18 +88,19 @@ public class PerPersonDpsTests
     }
 
     /// <summary>
-    /// <see cref="SessionStats.PerPersonDps"/>'s own doc comment promises "one row per
-    /// CURRENT teammate" — a teammate who has left the group is no longer one, so once they
-    /// are the ONLY teammate this session has known, the panel must read as solo again (a
-    /// single-element list), the same "hidden panel" shape solo has always had
-    /// (<see cref="EQBuddy.UI.Shared.PerPersonDpsPresentation.Rows"/> hides anything under
-    /// two rows). <see cref="DerivedTeammates.SnapshotsFor"/> enumerates every teammate ever
-    /// accumulated this session rather than the CURRENT roster, so without a fix Garg's row
-    /// never goes away even though he left minutes ago and the primary has been soloing
-    /// since.
+    /// A departed teammate no longer counts as "playing with me right now" — but their row
+    /// STAYS, tagged <see cref="SessionStats.PersonDps.IsCurrent"/> = false, rather than
+    /// disappearing the way an earlier version of this fix did. That earlier version
+    /// dropped a departed name's row entirely, which let the panel's own rows stop adding
+    /// up to the combined header total the instant somebody left (<see cref="DuoSnapshot"/>
+    /// deliberately keeps a departed teammate's accrued damage in the combined total for
+    /// the rest of the session — see <see cref="DuoSnapshotTests.ADepartedTeammatesAccruedDamageStaysInTheCombinedTotalForTheSession"/>).
+    /// Keeping the row (which <see cref="EQBuddy.UI.Shared.PerPersonDpsPresentation"/> draws
+    /// as "Garg (left)") keeps the two numbers reconcilable and still says plainly that
+    /// Garg is no longer grouped.
     /// </summary>
     [Fact]
-    public void ADepartedTeammateStopsAppearingAsACurrentPartner()
+    public void ADepartedTeammateKeepsItsRowTaggedNotCurrent()
     {
         var duo = new OwnLogDuo()
             .Feed(T, "Garg has joined the group.")
@@ -111,9 +112,59 @@ public class PerPersonDpsTests
 
         var rows = duo.Primary.PerPersonDps(null, null);
 
-        var mine = Assert.Single(rows);
-        Assert.Equal(OwnLogDuo.PrimaryName, mine.Name);
-        Assert.DoesNotContain(rows, r => r.Name == "Garg");
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(OwnLogDuo.PrimaryName, rows[0].Name);
+        Assert.True(rows[0].IsCurrent);
+        Assert.Equal("Garg", rows[1].Name);
+        Assert.False(rows[1].IsCurrent);
+        Assert.Equal(20, rows[1].DamageDealt);
+
+        // The rows still add up to the combined header total.
+        var combined = duo.Combined();
+        Assert.Equal(rows[0].DamageDealt + rows[1].DamageDealt, combined.DamageDealt);
+    }
+
+    /// <summary>A teammate who rejoins drops the "(left)" tag again — <see cref="SessionStats.PersonDps.IsCurrent"/>
+    /// is read live off <see cref="DerivedTeammates.CountedNow"/> every call, never sticky
+    /// from a past departure.</summary>
+    [Fact]
+    public void ARejoinedTeammateDropsTheDepartedTag()
+    {
+        var duo = new OwnLogDuo()
+            .Feed(T, "Garg has joined the group.")
+            .Feed(T.AddSeconds(1), "You slash a gnoll for 10 points of damage.")
+            .Feed(T.AddSeconds(2), "Garg slashes a gnoll for 20 points of damage.")
+            .Feed(T.AddSeconds(3), "Garg has left the group.")
+            .Feed(T.AddSeconds(4), "Garg has joined the group.")
+            .Feed(T.AddSeconds(5), "Garg slashes a gnoll for 5 points of damage.");
+
+        var rows = duo.Primary.PerPersonDps(null, null);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("Garg", rows[1].Name);
+        Assert.True(rows[1].IsCurrent);
+    }
+
+    /// <summary>Current members sort before departed ones, each band name-sorted — a
+    /// departed teammate does not shove itself ahead of somebody still actually playing.</summary>
+    [Fact]
+    public void CurrentMembersSortBeforeDepartedOnes()
+    {
+        var duo = new OwnLogDuo()
+            .Feed(T, "Zed has joined the group.")
+            .Feed(T.AddSeconds(1), "Ally has joined the group.")
+            .Feed(T.AddSeconds(2), "You slash a gnoll for 10 points of damage.")
+            .Feed(T.AddSeconds(3), "Zed slashes a gnoll for 20 points of damage.")
+            .Feed(T.AddSeconds(4), "Ally slashes a gnoll for 30 points of damage.")
+            .Feed(T.AddSeconds(5), "Zed has left the group.");
+
+        var rows = duo.Primary.PerPersonDps(null, null);
+
+        // Primary, then current members name-sorted (Ally), then departed (Zed) — even
+        // though "Zed" would sort before nobody else current here, it still lands last.
+        Assert.Equal([OwnLogDuo.PrimaryName, "Ally", "Zed"], rows.Select(r => r.Name).ToArray());
+        Assert.True(rows[1].IsCurrent);
+        Assert.False(rows[2].IsCurrent);
     }
 
     [Fact]

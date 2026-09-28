@@ -48,25 +48,35 @@ public sealed partial class SessionStats
 
     /// <summary>One person's OWN dps numbers for the per-person duo readout — never a
     /// combined rate. <see cref="EQBuddy.UI.Shared.PerPersonDpsPresentation"/> turns a list
-    /// of these into the rows the widget draws.</summary>
-    public readonly record struct PersonDps(string Name, double SessionDps, double CurrentDps, long DamageDealt);
+    /// of these into the rows the widget draws, tagging a departed row "(left)" off
+    /// <see cref="IsCurrent"/> rather than this Core layer mangling <see cref="Name"/>
+    /// itself.</summary>
+    /// <param name="IsCurrent">Whether this person is on <see cref="DerivedTeammates.CountedNow"/>'s
+    /// roster right now. Always <c>true</c> for the primary's own row (it is never "away
+    /// from itself"). A teammate flips to <c>false</c> the moment they leave the group and
+    /// back to <c>true</c> if they rejoin — it is read live off the CURRENT roster every
+    /// call, never sticky.</param>
+    public readonly record struct PersonDps(string Name, double SessionDps, double CurrentDps, long DamageDealt,
+        bool IsCurrent = true);
 
     /// <summary>This instance's own row (its plain <see cref="Snapshot(TimeSpan?, IReadOnlyList{TrackedRule}?)"/>
     /// — the SOLO numbers, not <see cref="DuoSnapshot"/>'s combined one) first, then one
-    /// row per CURRENT teammate off THEIR OWN isolated instance, name-sorted. Same window
-    /// and rules as the caller's own display snapshot, so a row never disagrees with what
-    /// fed it. Solo (no teammates known, or every known teammate has since left) answers a
-    /// single-element list.
+    /// row per teammate this session has EVER known off THEIR OWN isolated instance —
+    /// current members first (name-sorted), departed members after (name-sorted). Same
+    /// window and rules as the caller's own display snapshot, so a row never disagrees with
+    /// what fed it. Solo (no teammate has ever been known) answers a single-element list.
     ///
-    /// <b>"Current" is <see cref="DerivedTeammates.CountedNow"/>'s roster, not
-    /// <see cref="DerivedTeammates.SnapshotsFor"/>'s full set</b> — the latter is keyed on
-    /// <c>KnownTeammates</c> (every name this session has ever accrued anything for, on
-    /// purpose: it is what lets a departed teammate's contribution keep counting toward the
-    /// COMBINED <see cref="DuoSnapshot"/> for the rest of the session). This readout is a
-    /// different question — "who is presented as a partner playing with me right now" — so
-    /// a name off the current roster (left, disbanded, logged out) is filtered out here even
-    /// though its accrued numbers are still sitting in <c>KnownTeammates</c> for the combine
-    /// to keep reading.</summary>
+    /// <b>A departed teammate keeps their row, tagged <see cref="PersonDps.IsCurrent"/> =
+    /// false, rather than disappearing.</b> Earlier this readout filtered a departed name
+    /// out entirely (dropping straight to solo) — the accrued number was still sitting in
+    /// <see cref="DerivedTeammates.KnownTeammates"/> for the COMBINED <see cref="DuoSnapshot"/>
+    /// to keep reading, so the panel's own rows silently stopped adding up to the header's
+    /// combined total the moment somebody left. Keeping the row (and letting the caller
+    /// render it as "Garg (left)") keeps the rows and the header agreeing, and still makes
+    /// it obvious that name is no longer grouped. A name rejoining the group simply flips
+    /// <see cref="PersonDps.IsCurrent"/> back to <c>true</c> on the next call — nothing here
+    /// is sticky, it is read live off <see cref="DerivedTeammates.CountedNow"/> every
+    /// time.</summary>
     public IReadOnlyList<PersonDps> PerPersonDps(TimeSpan? recentWindow, IReadOnlyList<TrackedRule>? rules)
     {
         var mine = Snapshot(recentWindow, rules);
@@ -82,9 +92,14 @@ public sealed partial class SessionStats
             // asked for as a set — a silent case-sensitivity mismatch here would bring the
             // exact bug back for a name whose casing drifted between roster and stats.
             var current = new HashSet<string>(teammates.CountedNow(), StringComparer.OrdinalIgnoreCase);
-            foreach (var (name, snap) in teammates.SnapshotsFor(recentWindow, rules))
-                if (current.Contains(name))
-                    rows.Add(new PersonDps(name, snap.SessionDps, snap.CurrentDps, snap.DamageDealt));
+            // Current members first, departed after — both bands name-sorted. SnapshotsFor
+            // already hands them back name-sorted, and OrderBy is a STABLE sort, so grouping
+            // by "is this name current" on top of that ordering cannot itself reorder either
+            // band.
+            foreach (var (name, snap) in teammates.SnapshotsFor(recentWindow, rules)
+                         .OrderBy(t => current.Contains(t.Name) ? 0 : 1))
+                rows.Add(new PersonDps(name, snap.SessionDps, snap.CurrentDps, snap.DamageDealt,
+                    current.Contains(name)));
         }
         return rows;
     }

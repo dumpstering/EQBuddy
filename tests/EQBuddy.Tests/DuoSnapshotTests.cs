@@ -234,15 +234,15 @@ public class DuoSnapshotTests
     }
 
     /// <summary>
-    /// Deliberately unlike <see cref="SessionStats.PerPersonDps"/> (which drops a name off
-    /// its rows the moment it leaves the CURRENT roster — see
-    /// <see cref="PerPersonDpsTests.ADepartedTeammateStopsAppearingAsACurrentPartner"/>):
-    /// the COMBINED <see cref="SessionStats.DuoSnapshot"/> total keeps counting what a
+    /// The COMBINED <see cref="SessionStats.DuoSnapshot"/> total keeps counting what a
     /// teammate did for the rest of the primary's session even after they leave the group,
     /// per <see cref="DerivedTeammates.KnownTeammates"/>'s own documented contract ("a name
-    /// that left the group keeps what it already accrued"). Two different questions —
-    /// "what did this session's damage add up to" vs. "who is playing with me right now" —
-    /// answered two different ways on purpose, not the same bug in two places.
+    /// that left the group keeps what it already accrued"). <see cref="SessionStats.PerPersonDps"/>
+    /// agrees rather than disagreeing with this: it keeps a departed teammate's row too
+    /// (tagged <see cref="SessionStats.PersonDps.IsCurrent"/> = false — see
+    /// <see cref="PerPersonDpsTests.ADepartedTeammateKeepsItsRowTaggedNotCurrent"/>), so the
+    /// panel's own rows still add up to exactly this combined total instead of silently
+    /// falling short the moment somebody left.
     /// </summary>
     [Fact]
     public void ADepartedTeammatesAccruedDamageStaysInTheCombinedTotalForTheSession()
