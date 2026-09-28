@@ -92,18 +92,31 @@ public sealed class DerivedTeammates
     private (int RosterVersion, string? Primary, string? Pet) _rosterKey = (-1, null, null);
 
     /// <summary>A short ring buffer of the most recently observed raw primary lines
-    /// (a monotonic sequence number, timestamp, and already-normalized message), oldest
-    /// first. Exists for exactly one purpose: a name that <see cref="TeammateRoster"/>
-    /// recognizes via the kill-plus-party-XP correlation
-    /// (<see cref="TeammateRoster.PartyKillsToJoin"/>) is recognized on the KILL line
-    /// ("X has been slain by Garg!") — a line that carries no damage of its own. The hit
-    /// that actually finished the mob ("Garg punches X for N points of damage. (Finishing
-    /// Blow)") is a SEPARATE, EARLIER log line, so by the time the kill line updates the
-    /// roster, that hit has already been read with Garg absent from it and its damage was
-    /// never rewritten for anybody. See <see cref="ReplayBufferedLinesFor"/>.
-    /// Bounded and cheap: a handful of short strings, cleared on every session/roster
-    /// reset so nothing here ever reaches across a session boundary.</summary>
-    private readonly Queue<(long Seq, DateTime Ts, string Msg)> _recentLines = new();
+    /// (a monotonic sequence number, timestamp, already-normalized message, and the
+    /// roster THIS LINE WAS OBSERVED AGAINST — see <see cref="ApplyRewrittenLines"/>'s
+    /// own <c>roster</c> parameter, captured verbatim), oldest first. Exists for exactly
+    /// one purpose: a name that <see cref="TeammateRoster"/> recognizes via the
+    /// kill-plus-party-XP correlation (<see cref="TeammateRoster.PartyKillsToJoin"/>) is
+    /// recognized on the KILL line ("X has been slain by Garg!") — a line that carries no
+    /// damage of its own. The hit that actually finished the mob ("Garg punches X for N
+    /// points of damage. (Finishing Blow)") is a SEPARATE, EARLIER log line, so by the
+    /// time the kill line updates the roster, that hit has already been read with Garg
+    /// absent from it and its damage was never rewritten for anybody. See
+    /// <see cref="ReplayBufferedLinesFor"/>.
+    ///
+    /// The roster snapshot is what lets a replay tell "never credited" from "already
+    /// credited live" for the SAME name: a name already on the roster when a line was
+    /// first observed was already run through <see cref="ApplyRewrittenLines"/> for that
+    /// exact line, and must never be replayed for that name again — no matter how many
+    /// times that name is later promoted (QA finding: a name whose first membership came
+    /// from a group-join, or a name re-promoted while its OWN prior live-credited
+    /// activity is still buffered, was replayed a second time because
+    /// <see cref="_replayConsumedThrough"/> alone cannot see "was this ever live-credited
+    /// to N", only "was this buffer position already scanned for N").
+    ///
+    /// Bounded and cheap: a handful of short strings and small arrays, cleared on every
+    /// session/roster reset so nothing here ever reaches across a session boundary.</summary>
+    private readonly Queue<(long Seq, DateTime Ts, string Msg, string[] RosterAtTime)> _recentLines = new();
 
     /// <summary>The next sequence number to stamp onto a buffered line — see
     /// <see cref="_recentLines"/> and <see cref="_replayConsumedThrough"/>.</summary>
@@ -303,35 +316,52 @@ public sealed class DerivedTeammates
                         _version++;
                     }
 
-            _recentLines.Enqueue((_nextLineSeq++, ts, msg));
+            _recentLines.Enqueue((_nextLineSeq++, ts, msg, roster));
             while (_recentLines.Count > RecentLineBufferCapacity) _recentLines.Dequeue();
         }
     }
 
     /// <summary>Re-reads the buffered recent lines (see <see cref="_recentLines"/>) for
-    /// one line naming <paramref name="name"/>, who was NOT yet a recognized teammate
-    /// when they were first read and just became one. The roster passed to
+    /// one line naming <paramref name="name"/>, who just became a recognized teammate via
+    /// the kill-plus-party-XP correlation. The roster passed to
     /// <see cref="TeammatePerspective.Rewrite"/> is <paramref name="name"/> ALONE —
     /// never the full current roster — so a buffered line naming a teammate who was
-    /// already recognized at the time (and so already correctly credited once) cannot
-    /// be credited to them a second time; only the newly-recognized name can still be
-    /// missing anything from that line.
+    /// already recognized at the time cannot be credited to THEM a second time here;
+    /// only <paramref name="name"/> can still be missing anything from that line.
     ///
-    /// Only lines with a sequence number PAST <see cref="_replayConsumedThrough"/> for
-    /// this name are ever scanned, and that marker is advanced to the buffer's current
-    /// tail before returning — so if this same name is promoted a SECOND time later in
-    /// the session (a leave, then a fresh kill-plus-party-XP correlation) while the
-    /// first promotion's own trigger line is still sitting in the ring buffer, that line
-    /// is never scanned again and never credited twice. Caller holds _gate.</summary>
+    /// Two independent guards, because either one alone misses a real shape (QA finding):
+    ///
+    /// 1. A line whose STORED roster-at-observation-time already contained
+    ///    <paramref name="name"/> was already run through <see cref="ApplyRewrittenLines"/>
+    ///    for <paramref name="name"/> when it was first observed (live-credited) — skipped
+    ///    unconditionally, regardless of <see cref="_replayConsumedThrough"/>. This is what
+    ///    catches a name whose FIRST membership came from a group-join (so
+    ///    <see cref="_replayConsumedThrough"/> was never set for them at all, defaulting to
+    ///    -1) as well as a name re-promoted while a line credited during its OWN prior,
+    ///    now-ended membership is still sitting in the buffer.
+    /// 2. Only lines with a sequence number PAST <see cref="_replayConsumedThrough"/> for
+    ///    this name are scanned at all, and that marker is advanced to the buffer's
+    ///    current tail before returning — so if this same name is promoted a SECOND time
+    ///    later in the session while the first promotion's own trigger line (never
+    ///    live-credited, since that is the whole reason this replay exists) is still
+    ///    sitting in the ring buffer, that line is never scanned again and never credited
+    ///    twice.
+    ///
+    /// Caller holds _gate.</summary>
     private void ReplayBufferedLinesFor(string name, string? primaryName)
     {
         var single = new[] { name };
         var consumedThrough = _replayConsumedThrough.GetValueOrDefault(name, -1L);
         var maxSeqSeen = consumedThrough;
-        foreach (var (seq, bts, bmsg) in _recentLines)
+        foreach (var (seq, bts, bmsg, rosterAtTime) in _recentLines)
         {
-            if (seq <= consumedThrough) continue;
             if (seq > maxSeqSeen) maxSeqSeen = seq;
+            if (seq <= consumedThrough) continue;
+            // Already on the roster when this line was first observed: it went through
+            // the normal live path for this name already (or would have, had the line
+            // named them) — never replay it for them again.
+            if (Array.Exists(rosterAtTime, r => string.Equals(r, name, StringComparison.OrdinalIgnoreCase)))
+                continue;
             if (!ContainsAnyName(bmsg, single)) continue;
             foreach (var line in TeammatePerspective.Rewrite(bmsg, primaryName ?? "", single))
             {
@@ -349,7 +379,15 @@ public sealed class DerivedTeammates
                 // than credited with a guessed promotion.
                 if (evt is KillEvent) continue;
                 GetOrCreate(line.Actor).Apply(evt);
-                _lastApplied[line.Actor] = bts;
+                // QA finding: a KNOWN teammate keeps getting a keep-alive RawLineEvent
+                // tick (see the loop above) for every line while off-roster, which
+                // advances _lastApplied[name] to essentially "now" even while they are
+                // absent. A buffered replay always applies an OLDER timestamp than
+                // "now" — never allow it to move the bookkeeping BACKWARDS, which would
+                // make a later keep-alive tick see a stale, too-early "last applied"
+                // time and could reopen a gap that was never really there.
+                if (!_lastApplied.TryGetValue(line.Actor, out var prevApplied) || bts > prevApplied)
+                    _lastApplied[line.Actor] = bts;
                 _version++;
             }
         }
@@ -620,6 +658,20 @@ public sealed class DerivedTeammates
                 Replace(_lastApplied, staging._lastApplied);
                 Replace(_promoted, staging._promoted);
                 Replace(_deaths, staging._deaths);
+                // QA finding: the replay ring buffer, its sequence counter and the
+                // per-actor replay markers are bookkeeping ABOUT the staging instance's
+                // own _stats/_roster — swapping those in while leaving this instance's
+                // OLD (pre-replay) buffer/markers in place leaves bookkeeping that
+                // describes a session that no longer exists next to state that does,
+                // and a party-kill re-promotion soon after the commit reads that stale
+                // bookkeeping (a stale, too-low _replayConsumedThrough in particular can
+                // let an already-accounted-for line be replayed again). Carry all three
+                // over from staging, which built them against the exact _stats/_roster
+                // just swapped in above, so they never disagree with what they describe.
+                _recentLines.Clear();
+                foreach (var line in staging._recentLines) _recentLines.Enqueue(line);
+                _nextLineSeq = staging._nextLineSeq;
+                Replace(_replayConsumedThrough, staging._replayConsumedThrough);
             }
             _version++;
             return true;

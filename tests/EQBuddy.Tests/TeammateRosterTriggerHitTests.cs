@@ -182,4 +182,287 @@ public sealed class TeammateRosterTriggerHitTests
         Assert.Equal(42, garg.SpellDamage);
         Assert.Equal(42, garg.DamageDealt);
     }
+
+    /// <summary>
+    /// Independent review REJECTED finding #3 (MINOR): the self-recoil guard DROPPED the
+    /// line entirely, so a real hit that landed on the teammate went uncounted as damage
+    /// taken too. It must be rewritten to land exactly like the primary's own "You hurt
+    /// yourself for N points." line (a DamageTakenEvent with Self: true) — excluded from
+    /// damage DEALT, but counted as damage TAKEN.
+    /// </summary>
+    [Fact]
+    public void ASelfInflictedSpellRecoilIsCountedAsDamageTaken()
+    {
+        var duo = new OwnLogDuo();
+        var t = T;
+        void Feed(string msg) => duo.Feed(t = t.AddSeconds(1), msg);
+
+        Feed("You gain party experience! (1.000%)");
+        Feed("A rat has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A bat has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A gnoll has been slain by Garg!");
+        Assert.Contains("Garg", duo.Teammates.AutoDetected);
+
+        Feed("Garg hit a will pillager for 42 points of magic damage by Lifebite.");
+        Feed("Garg hit Garg for 6 points of magic damage by Lifebite.");
+
+        var garg = duo.Teammates.Snapshots()["Garg"];
+        Assert.Equal(42, garg.SpellDamage);
+        Assert.Equal(42, garg.DamageDealt);
+        Assert.Equal(6, garg.DamageTaken);
+    }
+
+    /// <summary>
+    /// Independent review REJECTED finding #1 (MAJOR): <c>_replayConsumedThrough</c> only
+    /// ever advances on a REPLAY, never on a line a teammate was credited for LIVE while on
+    /// the roster. Exactly the leave-then-re-promotion shape above, but with one extra live
+    /// hit landed on Garg AFTER his first promotion and BEFORE he leaves: that hit is
+    /// applied normally (live, appliedTo), then re-enters the ring buffer like every other
+    /// line. When Garg is re-promoted, the marker left over from the first replay predates
+    /// this line's sequence number, so the old code re-scans and re-credits it — the same
+    /// 50 damage counted twice on top of the correctly-once-counted 177.
+    /// </summary>
+    [Fact]
+    public void ALiveCreditedLineIsNeverReplayedAfterALeaveAndRePromotion()
+    {
+        var duo = new OwnLogDuo();
+        var t = T;
+        void Feed(string msg) => duo.Feed(t = t.AddSeconds(1), msg);
+
+        // First promotion, same shape as the leave/re-promotion test above.
+        Feed("You gain party experience! (1.000%)");
+        Feed("A rat has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A bat has been slain by Garg!");
+        Feed("Garg punches a flouting gargoyle for 177 points of damage. (Finishing Blow)");
+        Feed("You gain party experience! (1.581%)");
+        Feed("A flouting gargoyle has been slain by Garg!");
+        Assert.Contains("Garg", duo.Teammates.AutoDetected);
+        Assert.Equal(177, duo.Teammates.Snapshots()["Garg"].MeleeDamage);
+
+        // A LIVE hit while Garg is still a recognized teammate — credited through the
+        // normal (non-replay) path, then enters the ring buffer just like any other line.
+        Feed("Garg punches a newt for 50 points of damage.");
+        Assert.Equal(227, duo.Teammates.Snapshots()["Garg"].MeleeDamage);
+
+        // Garg leaves — clears auto-detection and the party-kill correlation counters.
+        Feed("Garg has left the group.");
+        Assert.DoesNotContain("Garg", duo.Teammates.AutoDetected);
+
+        // A fresh kill-plus-party-XP correlation, well within the 32-line ring buffer.
+        Feed("You gain party experience! (1.000%)");
+        Feed("A toad has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A slug has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A newt has been slain by Garg!");
+        Assert.Contains("Garg", duo.Teammates.AutoDetected);
+
+        // The bug: this came back 277 (177 + 50 + the already-live-credited 50 replayed
+        // a second time) instead of 227.
+        Assert.Equal(227, duo.Teammates.Snapshots()["Garg"].MeleeDamage);
+    }
+
+    /// <summary>
+    /// Independent review REJECTED finding #1's other arm: when a name's FIRST membership
+    /// came from a group-join line (not the kill-plus-party-XP correlation),
+    /// <c>_replayConsumedThrough</c> is never set for them at all (stays -1). If that name
+    /// later leaves and earns a FRESH kill-correlation promotion while lines from their
+    /// group-join membership are still in the ring buffer, a marker of -1 makes the replay
+    /// re-scan the ENTIRE buffer — re-crediting everything that was already credited live
+    /// during the group-join membership.
+    /// </summary>
+    [Fact]
+    public void AGroupJoinMembershipThenAPartyKillPromotionDoesNotReplayAlreadyLiveCreditedLines()
+    {
+        var duo = new OwnLogDuo();
+        var t = T;
+        void Feed(string msg) => duo.Feed(t = t.AddSeconds(1), msg);
+
+        // Garg joins via an ordinary group line — never the kill-plus-party-XP
+        // correlation, so LastPartyKillPromotion (and _replayConsumedThrough) never fires
+        // for him during this membership.
+        Feed("Garg has joined the group.");
+        Assert.Contains("Garg", duo.Teammates.AutoDetected);
+
+        // Live-credited hit while he is a normal, already-recognized member.
+        Feed("Garg punches a newt for 80 points of damage.");
+        Assert.Equal(80, duo.Teammates.Snapshots()["Garg"].MeleeDamage);
+
+        Feed("Garg has left the group.");
+        Assert.DoesNotContain("Garg", duo.Teammates.AutoDetected);
+
+        // A fresh kill-plus-party-XP correlation, with the group-join membership's own
+        // live-credited line still sitting in the 32-line ring buffer.
+        Feed("You gain party experience! (1.000%)");
+        Feed("A toad has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A slug has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A rat has been slain by Garg!");
+        Assert.Contains("Garg", duo.Teammates.AutoDetected);
+
+        // The bug: a -1 marker rescans the whole buffer and re-credits the 80-damage line
+        // a second time (160) instead of leaving it at 80.
+        Assert.Equal(80, duo.Teammates.Snapshots()["Garg"].MeleeDamage);
+    }
+
+    /// <summary>
+    /// Independent review REJECTED finding #2 (MINOR): out-of-order application. The
+    /// "keep every known teammate's session clock moving" tick in <c>ObserveCore</c> fires
+    /// for every KNOWN teammate on every primary line, whether or not they are on the
+    /// current roster — so a teammate who has left keeps having <c>_lastApplied</c> pushed
+    /// forward while absent (their own <see cref="SessionStats"/> keeps getting quiet
+    /// keep-alive ticks with the CURRENT timestamp). When they are re-promoted, the ring
+    /// buffer replay applies a hit stamped EARLIER than that already-advanced clock.
+    /// Required: <c>_lastApplied[name]</c> must never move backwards (use max), and the
+    /// replay must not leave the teammate's own combat/session bookkeeping corrupted.
+    ///
+    /// Values below are hand-verified against the fixed algorithm's own (documented) rules
+    /// rather than a live "always on the roster" oracle: an always-on-roster oracle would
+    /// also credit Garg with a full KillEvent (and its own combat-window extension) for
+    /// EVERY correlation-building kill line ("A toad/slug has been slain by Garg!") before
+    /// he is actually recognized — something the real, deferred-promotion path correctly
+    /// never does (a buffered KillEvent is refused rather than replayed — see
+    /// <see cref="DerivedTeammates.ReplayBufferedLinesFor"/>'s own comment on that), so
+    /// comparing against it would fail on a difference that is correct, not a regression.
+    /// </summary>
+    [Fact]
+    public void AReplayedOlderHitIntoAnAlreadyKnownTeammateDoesNotCorruptTheirCombatBookkeeping()
+    {
+        var duo = new OwnLogDuo();
+        var t = T;
+        DateTime Next() => t = t.AddSeconds(1);
+        void Feed(string msg) => duo.Feed(Next(), msg);
+
+        // First promotion: the classic trigger-hit shape (177 damage), replayed once Garg
+        // is recognized.
+        Feed("You gain party experience! (1.000%)");
+        Feed("A rat has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A bat has been slain by Garg!");
+        Feed("Garg punches a flouting gargoyle for 177 points of damage. (Finishing Blow)");
+        Feed("You gain party experience! (1.581%)");
+        Feed("A flouting gargoyle has been slain by Garg!");
+        Assert.Contains("Garg", duo.Teammates.AutoDetected);
+        Assert.Equal(177, duo.Teammates.Snapshots()["Garg"].MeleeDamage);
+
+        Feed("Garg has left the group.");
+        Assert.DoesNotContain("Garg", duo.Teammates.AutoDetected);
+
+        // Twenty quiet seconds for Garg while the primary keeps playing alone — comfortably
+        // past SessionStats' own 10-second combat gap, so his first combat span (above)
+        // closes, AND comfortably advances the keep-alive clock for him (still known, just
+        // off-roster) to "now" before the second promotion below ever happens.
+        for (var i = 0; i < 20; i++) Feed($"You have taken {i + 1} damage from a rat by Claw.");
+
+        // A fresh kill-plus-party-XP correlation. Its own trigger hit (90 damage) is
+        // buffered and stamped several seconds BEHIND the keep-alive-advanced clock — the
+        // exact out-of-order shape the finding describes. The two correlation-building kill
+        // lines ("toad", "slug") happen while Garg is still unrecognized, so — correctly —
+        // neither is ever credited to him (a buffered KillEvent is refused, and neither line
+        // is re-visited once he IS recognized): only the trigger hit and the final,
+        // promoting kill line ("newt") ever reach his stats.
+        Feed("You gain party experience! (1.000%)");
+        Feed("A toad has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A slug has been slain by Garg!");
+        var trigger = Next(); duo.Feed(trigger, "Garg punches a newt for 90 points of damage. (Finishing Blow)");
+        Feed("You gain party experience! (1.000%)");
+        var lastLine = Next(); duo.Feed(lastLine, "A newt has been slain by Garg!");
+        Assert.Contains("Garg", duo.Teammates.AutoDetected);
+
+        var garg = duo.Teammates.Snapshots()["Garg"];
+
+        // 177 + 90: the trigger hit is credited exactly once on each promotion.
+        Assert.Equal(267, garg.MeleeDamage);
+
+        // The bookkeeping must not be left stale by the older, backdated replay: the most
+        // recent thing that happened to Garg is the promoting kill line itself, applied
+        // forward (normally) immediately after the replay in the very same call.
+        Assert.Equal(lastLine, garg.LastEventTime);
+
+        // Combat spans: the first span (rat/bat/gargoyle-kill/177-hit) runs from the 177
+        // hit to the promoting kill line 2 seconds later (2s); it closes on the 20-second
+        // quiet gap that follows. The second span opens fresh at the (backdated) 90-hit and
+        // runs to the promoting "newt" kill line 2 seconds later (2s) — it is still open at
+        // snapshot time. A corrupted (regressed) clock would either shrink one of these
+        // spans to nothing, extend the closed span across the quiet gap, or otherwise throw
+        // this off; the fixed algorithm gives exactly 2 + 2 = 4 seconds.
+        Assert.Equal(4.0, garg.CombatSeconds, 3);
+        Assert.Equal(267.0 / 4.0, garg.SessionDps, 3);
+    }
+
+    /// <summary>
+    /// Independent review REJECTED finding #4 (MINOR): <c>CommitReplay</c> swapped in the
+    /// staging instance's <c>_stats</c>/<c>_roster</c> (and the corrections dictionaries)
+    /// but left this instance's OWN <c>_recentLines</c> ring buffer, <c>_nextLineSeq</c> and
+    /// <c>_replayConsumedThrough</c> markers untouched — bookkeeping that describes staging's
+    /// replay left behind, next to state describing a session that no longer exists.
+    ///
+    /// Reproduced here at its simplest: a re-derivation (<see cref="DerivedTeammates.BeginReplay"/>
+    /// / <see cref="DerivedTeammates.CommitReplay"/>, the same pair
+    /// <see cref="LogWatcher.RederiveTeammates"/> uses) is committed WHILE a party-kill
+    /// correlation's own trigger hit is still sitting unconsumed in the STAGING instance's
+    /// buffer — the promoting kill line itself has not been fed yet. Without carrying that
+    /// buffer over, the live instance has no record of the trigger hit at all once the
+    /// promoting line finally arrives (fed to the now-committed live instance): the
+    /// teammate's damage is silently short by exactly the buffered hit. And the buffer/marker
+    /// pair must stay CONSISTENT going forward too — a second, later leave-and-re-promotion
+    /// on the live instance must credit its own (separate) trigger hit exactly once, proving
+    /// the carried-over bookkeeping does not also open the door to a double credit.
+    /// </summary>
+    [Fact]
+    public void ARederiveCommittedWithAPendingTriggerHitStillCreditsItExactlyOnce()
+    {
+        var duo = new OwnLogDuo();
+        var (staging, generation) = duo.Teammates.BeginReplay();
+
+        var st = T;
+        DateTime SNext() => st = st.AddSeconds(1);
+        void SFeed(string msg)
+        {
+            var ts = SNext();
+            staging.ObservePrimaryLine(ts, msg, LogParser.Parse(ts, msg));
+        }
+
+        // Two correlation-building kills plus the trigger hit, fed to STAGING — Garg is not
+        // yet promoted there (only 2 of the 3 required kills have landed), so the trigger
+        // hit sits in staging's own ring buffer, unconsumed, at the moment of commit.
+        SFeed("You gain party experience! (1.000%)");
+        SFeed("A rat has been slain by Garg!");
+        SFeed("You gain party experience! (1.000%)");
+        SFeed("A bat has been slain by Garg!");
+        SFeed("Garg punches a flouting gargoyle for 177 points of damage. (Finishing Blow)");
+
+        Assert.True(duo.Teammates.CommitReplay(staging, generation));
+        Assert.DoesNotContain("Garg", duo.Teammates.AutoDetected);
+
+        var t = st;
+        DateTime Next() => t = t.AddSeconds(1);
+        void Feed(string msg) => duo.Feed(Next(), msg);
+
+        // The promoting kill line lands on the now-committed LIVE instance. The bug: with
+        // no carried-over buffer, this credits nothing for the 177 hit — it simply isn't
+        // there to find.
+        Feed("You gain party experience! (1.581%)");
+        Feed("A flouting gargoyle has been slain by Garg!");
+        Assert.Contains("Garg", duo.Teammates.AutoDetected);
+        Assert.Equal(177, duo.Teammates.Snapshots()["Garg"].MeleeDamage);
+
+        // A second, independent leave-and-re-promotion on the live instance, entirely after
+        // the commit — its own trigger hit must land exactly once on top of the first.
+        Feed("Garg has left the group.");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A toad has been slain by Garg!");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A slug has been slain by Garg!");
+        Feed("Garg punches a newt for 90 points of damage. (Finishing Blow)");
+        Feed("You gain party experience! (1.000%)");
+        Feed("A newt has been slain by Garg!");
+
+        Assert.Equal(267, duo.Teammates.Snapshots()["Garg"].MeleeDamage);
+    }
 }

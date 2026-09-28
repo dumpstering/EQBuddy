@@ -86,6 +86,12 @@ public static class TeammatePerspective
         @"^(?<healer>.+?) healed (?<target>.+?)(?<hot> over time)? for (?<amount>\d+)(?: \((?<attempted>\d+)\))? hit points(?: by (?<spell>.+?))?\.$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
+    // Pulls the damage amount off the tail of a SubjectSchoolDamage "rest" capture once
+    // it has been confirmed self-targeted ("<actor> for N points of ... damage by ...") —
+    // see the self-recoil handling below.
+    private static readonly Regex SelfRecoilAmountRx = new(
+        @"^\S+ for (?<dmg>\d+) points?\b", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
     private sealed record ShapeSet(
         Regex SubjectMelee,
         Regex SubjectMeleeMiss,
@@ -190,13 +196,24 @@ public static class TeammatePerspective
             // names the caster twice. Rewritten literally that would read "You hit <actor>
             // for N ...", which LogParser (with no way to know "<actor>" is the caster's
             // own name) counts as N more points of ordinary outgoing damage against an
-            // opponent that was never there. Refused rather than credited — the same
-            // treatment the primary's own "You hurt yourself for N points." already gets:
-            // self-inflicted damage is never counted as damage DEALT. Case-insensitive
-            // and whitespace-trimmed, consistent with how names are compared everywhere
-            // else in this file (the roster set is OrdinalIgnoreCase) — a byte-exact
-            // check would miss a case variant of the same self-recoil shape.
-            if (rest.TrimStart().StartsWith(rawActor.Trim() + " for ", StringComparison.OrdinalIgnoreCase)) return [];
+            // opponent that was never there. Case-insensitive and whitespace-trimmed,
+            // consistent with how names are compared everywhere else in this file (the
+            // roster set is OrdinalIgnoreCase) — a byte-exact check would miss a case
+            // variant of the same self-recoil shape.
+            if (rest.TrimStart().StartsWith(rawActor.Trim() + " for ", StringComparison.OrdinalIgnoreCase))
+            {
+                // Rewritten to land EXACTLY like the primary's own self-hurt line
+                // ("You hurt yourself for N points.", LogParser's DamageTakenEvent with
+                // Self: true) rather than dropped outright — QA finding: dropping it
+                // entirely left the teammate's damage TAKEN short by the recoil, even
+                // though it undeniably landed on them. It must never be counted as
+                // damage DEALT (same treatment the primary's own self-hurt line gets),
+                // but it is real damage taken.
+                var dmgMatch = SelfRecoilAmountRx.Match(rest);
+                if (!dmgMatch.Success) return [];
+                var (selfActor, selfIsPet) = ResolveActor(rawActor);
+                return [new TeammateLine(selfActor, $"You hurt yourself for {dmgMatch.Groups["dmg"].Value} points.", selfIsPet)];
+            }
             var (actor, isPet) = ResolveActor(rawActor);
             return [new TeammateLine(actor, $"You hit {rest}", isPet)];
         }
