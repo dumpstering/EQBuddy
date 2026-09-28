@@ -25,10 +25,12 @@ Tests: everything matching `*Teammate*` or `*Duo*` under
 
 ## Commits and identity
 Fork commits are authored as `dumpstering <dumpstering@gmail.com>`.
-Upstream's commit-identity guard (`scripts/commit-identity-guard.ps1`,
-which flags stray `David Edwards`/bot identities) does not apply to
-`dumpstering@gmail.com` commits — that's the fork owner, not a
-misattributed agent commit.
+Upstream's commit-identity guard (`scripts/commit-identity-guard.ps1`)
+enforces upstream's org policy and WILL fail `scripts/check.ps1` on the
+fork's own commits. That one failure is expected ONLY when the identity
+stage is the sole failing stage AND every refused author/committer email
+is exactly `dumpstering@gmail.com`. Any other failing stage, or any other
+refused email, is a real failure — investigate, don't wave it through.
 
 ## Running tests / gate
 ```
