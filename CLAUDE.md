@@ -26,7 +26,7 @@ is still needed to hit a size.
 
 An always-on-top WPF widget that reads the EverQuest Legends `/log` file and
 reports your session. **Log-only, by principle**: never reads game memory,
-never phones home, never measures other players. **Windows-only since
+never phones home except the opt-in heartbeat, never measures other players. **Windows-only since
 2026-09-04** — the Avalonia lane was deleted in E-2c and is preserved at
 `v1.99.18` and on `legacy-v1` ([LEGACY-V1.md](LEGACY-V1.md)). When a trap says
 "both lanes", it is telling you what the bug cost, not what the repo contains.
@@ -539,6 +539,12 @@ rather than a guard inside the script.
 Local how-much: [docs/ops/verification-ladder.md](docs/ops/verification-ladder.md).
 Flakes: [docs/ops/flake-ledger.md](docs/ops/flake-ledger.md).
 
+**David's machine always runs the latest dev build** (David, 2026-09-29). When work he
+should see is ready, run **`pwsh -NoProfile -File scripts/install-local.ps1 -Evolved -Install`**
+from `main` plus any PR still awaiting his smoke, merged on a LOCAL branch that is never
+pushed. The build is signed and installs over his Evolved copy on his own profile. The
+build it replaces becomes the Start menu's "(previous version)". Nothing is released.
+
 Releasing is **`pwsh -NoProfile -File scripts/release.ps1 -Tag vX.Y.Z`** —
 bump `<Version>` in `Directory.Build.props` and add a `WhatsNew.json` entry
 first, or it refuses. Run it via `pwsh` from Bash. **A silent failure is
@@ -706,8 +712,9 @@ behind**. Parity by feature list drifts; parity by shared module does not.
 all three call it.** Porting a feature *to* the phone is the signal the
 logic never went through the shared layer.
 
-**Breakout windows** — `BreakoutKind` is `{ Damage, Healing, Pet, Watch, Loot, Buffs }`
-(`DocumentationSizeTests` pins this list). `Progress` stopped being a
+**Breakout windows** — `BreakoutKind` is `{ Damage, Healing, Pet, Watch, Loot, Buffs, Quests }`
+(`DocumentationSizeTests` pins this list). `Quests` (2026-09-29) is the bar's Tracked
+quests list popped out; it arrives unpinned (`MigrateQuestsFloatOff`). `Progress` stopped being a
 breakout on 2026-08-25; the mini bar's xp chip opens the Progress WINDOW.
 **"Reuse the existing theme window on its current tab"** is the rule for
 every fold of this shape. Watch and Buffs earn the overlay; 
@@ -1459,7 +1466,8 @@ docs for the name first (trap 21).
 `Turquoise`. So the obvious argument-free re-run of a landing shot commits
 the WRONG picture and nothing complains — DRA-56 was itself dispatched to do
 that, from a card written six hours before the Founder settled it. Guard:
-`LandingSiteTests` pins all 10 landing assets (8 stills + 2 clips, since DRA-373 D2) to a
+`LandingSiteTests` pins all 11 landing assets (7 stills + 2 clips + the hero's launch
+trailer and its poster, since 2026-09-28) to a
 recipe manifest, compares page-against-manifest **both ways**, and asserts
 the default is NOT the landing theme so every row's explicit `-Theme` stays
 load-bearing. `record-tray-gifs.ps1` is the other way round — the landing is
