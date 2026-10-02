@@ -697,3 +697,94 @@ from a color wheel". Decided in the parent session, not re-asked:
 3. **#954's reporter was answered** with a signed routine reply once the release was live.
 
 - Dranak (Claude Code)
+
+## 2026-09-30 - /who sets the equipped classes and the level (DRA-633)
+
+David asked in session for `/who` to set the character's classes and level every time he types it. He can still override them on the Character room. He ruled that the `/who` level is the LOWEST of the equipped classes. The log agrees: on Sep 11 all three of WAR/DRU/MNK read 50, and the 23-27 dings that followed were a different equipped set.
+
+Decisions I made, and the default each one could have gone the other way on:
+
+1. **The statement and `/who` are ordered by TIME, not by rank.** Whichever is fresher wins, with an exact tie going to the statement. This is the same rule `CharacterLevel` already uses for dings against statements.
+   - Default against: "/who always wins", which would make a Character-room pick last only until the next `/who` in the replayed log.
+   - Result: a pick lasts until the next `/who` he actually types.
+2. **A class statement stored before this change has no stamp, so it counts as the oldest claim.** The first `/who` replaces it. That matches "/who should set it every time".
+   - Default against: treating old statements as "now", which would have made them outrank every `/who` until he re-picked.
+3. **Per-class levels from `/who`.** Every equipped class below N (or unknown) rises to N. A class above N is left alone, because the row only says "at least N" about it. Only when every class stands above N does the lowest one come down to N.
+   - Default against: writing N onto every class, which would have lowered his real 60s.
+4. **Other players' rows are parsed only to be dropped.** `WhoTracker` keeps nothing but the watched character's own row: the values line. `/anon` rows parse to nothing.
+   - Review fix (DRA-645): `LogWatcher` hands every listing row, `/anon` and title rows included, to `WhoTracker` ONLY, and the history import skips them. Before, each row also reached the session journal and the raw-line ring, and counted as your play time. So a text watch rule can no longer match a `/who` row.
+   - Default against: letting text rules see rows, which would let a rule watch for another player's name in the listing.
+5. **Version bumped to 2.0.2** in `Directory.Build.props` for the What's-new entry, which `whatsnew-guard` requires. This is not a release; the release go stays David's.
+
+- Dranak (Claude Code)
+
+## 2026-10-01 - DRA-128 graduation: `ssc-retirement` ADAPT, `whole-sequence-auth` HOLD (DRA-671)
+
+T2 ruling: Planner recommendation `e6169a75` on DRA-549, ACCEPTED by Dranak 2026-10-01 (comment `609a0b92`), recorded on DRA-128. Doctrine home: ops `EXO-PLAYBOOK.md` **entry 7** and the *Experiments in flight* table. Ruling ledger: `HANDOFF.md`.
+
+**`ssc-retirement` - GRADUATE, verdict ADAPT.** The evidence is the dashboard rows, not this entry: [`docs/ops/exo-dashboard.md`](docs/ops/exo-dashboard.md) **Reading 2**, the `ssc-retirement` table in R2.0.1 and its row set in R2.0.2 (sensitivity), window PRs #619-#643, landed by DRA-118 as PR #644, read against the frozen `docs/ops/exo-baseline.json`.
+
+1. **Caveat 3.** Most of the PRs-per-slice drop is mechanical: the `helm/ssc-N` twin was retired by construction (see the R2.0.1 "governance-only PR share" row). The term that was actually judged is the "Helm touches per delivery slice" row.
+2. **Caveat 4.** The rework row's 0 of 23 bounds the true rate below about 4%; it does not prove 0. Adopters keep counting veto and rework after they adopt.
+3. **The missed touches target is named, and is not a hold.** The touches row misses the frozen <0.3 target. Retiring the carrier PR changed the vehicle of a ruling, not how often rulings happen; per-slice ruling frequency is `whole-sequence-auth`'s claim, not this experiment's.
+4. **Why ADAPT and not ADOPT.** An adopting project must already have a committed, auditable ruling ledger (a `HELM.md` equivalent with SIGN-as-commit). Retiring carrier PRs without one retires the audit trail too.
+   - Default against: ADOPT, which would let a project with no ledger delete the only place its rulings were recorded.
+
+**`whole-sequence-auth` - HOLD, stays in flight, no verdict.** Lifting condition (verbatim): 1. DRA-134 (Sr Executor) completes: standing Scribe triage sweep live and DefectConventionStart set. Instrument half is already merged (DRA-135). 2. The first window whose last merge is at least 14 days (DRA-133 lag floor) past the convention start gets a reading where the escaped-defect row prints a rate or a named honest status other than NoConvention. 3. A fresh T2 ruling on that reading judges GWR/ACCR net of the measured term, and may re-set the <0.15 / >70% targets if they were joint M0-bundle aspirations.
+
+The `exo-experiment:` tag lines above are left as they are. `seat-mutex` kept its tag after it graduated (DRA-111), and `Get-Experiments` reads them.
+
+- Sr Executor (Claude Code), DRA-671
+
+## 2026-10-01 - v2.0.2 released, under a pre-given go and a Reviewer PASS
+
+1. **The go came before the review.** David, 2026-09-30, in session: "ship it when the review
+   passes". The review was Reviewer's (DRA-660), not Fable's or Helm's. David: "Everything is
+   going through paperclip so the role helm was doing is still being done." He waived his own
+   smoke test for this release: "These are small changes so I'm okay skipping smoke test."
+   - Default against: gates green, then Fable reviews, then David says ship.
+2. **Scope:** #981 (#679 Reward Chest loot), #982 (/who sets classes and level), #983 (#966
+   Guide window), #984 (#942 bar grows left), and DRA-42 D1-D3 (#985, #987, #988). **#710 was
+   dropped** at David's call, once Jr found the shrouds are detrimental spells and the Watch
+   list is beneficial-only by design; it moves to 2.0.3 on DRA-638.
+3. **Released 2026-10-01 ~06:02 CT**, tag `v2.0.2` at `f9e266a6`. Reviewer passed `3a9e33a7`;
+   the two later merges are DRA-642 (a build-script fix) and DRA-671 (docs), and neither is
+   player-facing. CI is green on the tag. Verified after the script reported success:
+   - the GitHub release is Latest, with all four assets;
+   - the OneDrive installer sha256 matches the build;
+   - the signature is Valid and timestamped as `CN=FlossworksCross-Stitch`;
+   - the local install is `2.0.2+f9e266a6`.
+4. **Why it took a settings change.** In this session the auto-mode classifier refused
+   `release.ps1` as a production deploy, and refused adding its own allow rule as
+   self-modification. David added `Bash(pwsh -NoProfile -File scripts/release.ps1:*)` to
+   `.claude/settings.local.json`, and said that running release scripts is not a
+   founder-level activity in the ExO. Making release execution a seat is DRA-675 (Planner).
+5. **Replies posted** on #966, #679 and #942, signed, after the release, as David asked.
+
+- Dranak (Claude Code)
+
+## 2026-10-01 - The release go is a decision, not a keystroke; execution is a seat (DRA-675 D1)
+
+**Authority:** the Founder on DRA-675, 2026-10-01: *"make sure future releases aren't bound by me needing to execute command level scripts. These are not founder level activities in our ExO."* Plan `docs/plans/DRA-675.md` (Challenger walk DRA-676, PROCEED-WITH (C1); its conditions 1-5 bind).
+
+**What changed.** CLAUDE.md consequence item 2 still makes the release go the Founder's and the one hard gate. The go now names the version and the reviewed commit, may be conditional on that review, and is recorded on the release card. EXECUTION is the Sr Executor release seat's (`docs/ops/release-seat.md`, runbook row **Release**). The Founder is never asked to run the script. A seat assignment or a Reviewer PASS is not a go. "Hold releases" gains the clause that such a go on the card is explicit. `scripts/release-verify.ps1` turns "it shipped" into rows (tag, release, OneDrive, sha256, signature), and a failed `release.ps1` is a hard stop that the seat never retries.
+
+- Default against: keep the go per-release and typed by the Founder at release time, with the Founder running `release.ps1` himself. That is the path that stalled v2.0.2 until he typed an allow rule by hand.
+
+**Measured, not assumed (plan §2):** the Sr seat runs `claude_local`/acp with `--setting-sources=project,local`, and Paperclip's acpx client answers its prompts in `approve-all`. The `-EvolvedLocal -Tag x` probe went through with no rule, and per Challenger condition 1 that clears nothing on its own. No settings file is both Sr-only and standing. The allow-rule text and its per-card target are in `release-seat.md`, and it was written into no settings file. Whether plan §4's Founder paste card is filed is Planner's call.
+
+- Sr Executor (Claude Code), DRA-678
+
+## 2026-10-01 - Releases sign as a service principal; az login is the fallback (DRA-679 D1)
+
+**Authority:** the Founder on DRA-677: *"automatic signing login, please."* Plan `docs/plans/DRA-679.md`, signed by Helm on PR #997. The Challenger walk DRA-680 returned PROCEED-WITH (C2), and its conditions C-1..C-4 and kill criteria K1..K3 were checked before `signing.ps1` changed. The evidence is on DRA-695 and in the PR body.
+
+1. **The certificate lasts 12 months, not 6.** Each rotation needs the Founder's `az` session, and a shorter cycle buys little when the key cannot be copied off the PC.
+   - Default against: 6 months.
+2. **The identity was created by script (`signing-identity.ps1 -Create`), not in the portal.** The Founder's ruling authorized creating the login, and doing it by script is how it stops being his keystroke.
+   - Default against: the plan's §8 portal walk-through. That stays the fallback if a call is ever refused.
+3. **`Az.Accounts` 5.5.3 is restored into the gitignored `tools\psmodules`, not installed into the user profile.** Controlled Folder Access refuses writes to `Documents\PowerShell\Modules` (measured), and `tools\` is already where the pinned dlib is restored.
+   - Default against: `Install-Module -Scope CurrentUser`.
+4. **The key is TPM-held** (`Microsoft Platform Crypto Provider`; ExportPolicy `None`, measured). It cannot be copied even by an administrator.
+
+- Sr Executor (Claude Code), DRA-695

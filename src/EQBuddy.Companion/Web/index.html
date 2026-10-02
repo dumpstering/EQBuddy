@@ -368,6 +368,19 @@
   .qitem.some { color:var(--text); }
   .qnote { color:var(--dim); font-size:11.5px; font-style:italic; margin:2px 0 0 6px; }
   .qmore { color:var(--dim); font-size:12px; padding:8px 4px; }
+  /* The Guide room's here-block (DRA-42 D1): read-only, above the tabs. Every word is the
+     PC's (trap 32) — the page arranges strings and never composes one. */
+  .qhere { background:var(--panel); border:1px solid var(--hairline); border-radius:11px;
+           padding:8px 12px; margin-bottom:8px; }
+  .qhere:empty { display:none; }
+  .qhere .hh { font-size:14px; font-weight:600; }
+  .qhere .hg { color:var(--dim); font-size:11.5px; font-weight:600; margin-top:6px; }
+  .qhere .hr { font-size:13px; margin:2px 0 0 6px; }
+  .qhere .hd { color:var(--dim); font-size:11.5px; margin:0 0 2px 6px; }
+  .qhere .hn { color:var(--dim); font-size:11.5px; margin-top:4px; }
+  .qhere .hs { color:var(--dim); font-size:11px; margin-top:1px; }
+  .qhere .hx { border-left:2px solid var(--accent); padding:2px 0 4px 8px; margin:6px 0 4px; }
+  .qhere .hl { font-size:12.5px; font-weight:600; margin-top:8px; }
 
   /* ---- map ---- */
   /* The map and its named list, side by side, as the desktop map window docks them.
@@ -2489,7 +2502,7 @@ function boot() {
   const questsPanel = (function () {
     const SEARCH_SETTLE = 120;  // ms — the desktop's own debounce; 250 was feelable
     const CARD_CAP = 60;        // the desktop's RenderCap, with the same "+N more" honesty
-    let root, tabsRow, searchBox, pickBtn, pickPanel, pickCols, chipsRow, scopeLine, list;
+    let root, hereBox, tabsRow, searchBox, pickBtn, pickPanel, pickCols, chipsRow, scopeLine, list;
     let tab = "general", lens = null, filter = "", debounce = 0;
     let d = null, catalog = null, byName = new Map();
     // Lookups are lowercased once per push: ledger keys arrive as the log spelled
@@ -2507,6 +2520,7 @@ function boot() {
 
     function make() {
       root = el("div");
+      hereBox = el("div", "qhere");
       tabsRow = el("div", "qtabs");
       const search = el("div", "qsearch");
       searchBox = el("input");
@@ -2529,7 +2543,7 @@ function boot() {
       chipsRow = el("div", "qchips");
       scopeLine = el("div", "qscope");
       list = el("div");
-      root.append(tabsRow, search, pickPanel, chipsRow, scopeLine, list);
+      root.append(hereBox, tabsRow, search, pickPanel, chipsRow, scopeLine, list);
       return root;
     }
 
@@ -2797,7 +2811,45 @@ function boot() {
       drawGeneral();
     }
 
-    function redraw() { drawTabs(); drawChips(); drawPicker(); drawList(); }
+    // WHILE YOU'RE HERE (DRA-42 D1) — the Guide room's block, read-only. The PC sent every
+    // sentence (heading, labels, rows, caps, the empty state, the unplaced line); this only
+    // lays them out. `d.whileHere` absent is a PC that predates the block (trap 32's other
+    // direction), and draws nothing rather than an empty state that would claim "nothing here".
+    function drawHere() {
+      const w = d.whileHere;
+      if (!w) { hereBox.replaceChildren(); return; }
+      // The source note is a LINE, never a hover: a phone has no hover (trap 35).
+      const out = [el("div", "hh", w.heading), el("div", "hs", w.note)];
+      // D2: what was left open in the zone just departed, under the heading where the eye
+      // lands (trap 44). The PC's "Show them" door is a click the phone has no need of: the
+      // rows are drawn outright, and the dismissal is named as the PC's (trap 35).
+      const x = w.departed;
+      if (x) {
+        const box = el("div", "hx");
+        box.append(el("div", "hr", x.notice), el("div", "hd", x.quests));
+        for (const g of (x.groups || [])) box.append(...groupLines(g));
+        box.append(el("div", "hs", x.onPc));
+        out.push(box);
+      }
+      if (w.empty) out.push(el("div", "hd", w.empty));
+      for (const g of (w.groups || [])) out.push(...groupLines(g));
+      if (w.leaveLine) out.push(el("div", "hl", w.leaveHeading), el("div", "hd", w.leaveLine));
+      if (w.unplaced) out.push(el("div", "hn", w.unplaced));
+      if (w.filtered) out.push(el("div", "hn", w.filtered));
+      hereBox.replaceChildren(...out);
+    }
+
+    function groupLines(g) {
+      const lines = [el("div", "hg", g.label)];
+      for (const r of g.rows) {
+        lines.push(el("div", "hr", r.title));
+        if (r.detail) lines.push(el("div", "hd", r.detail));
+      }
+      if (g.more) lines.push(el("div", "hd", g.more));
+      return lines;
+    }
+
+    function redraw() { drawHere(); drawTabs(); drawChips(); drawPicker(); drawList(); }
 
     return {
       render(p, section) {
@@ -2840,7 +2892,7 @@ function boot() {
     // about this wide, and the circles are drawn at 5-7px.
     const TAP_REACH_PX = 26;
     let svg = null, layer = null, trailG = null, dyn = null, wrap = null, tip = null, selBar = null;
-    let row = null, side = null, sideHead = null, sideRows = null, sideTargets = null;
+    let row = null, side = null, sideHead = null, sideRows = null, sideTargets = null, sideGuide = null;
     let stamp = "", bounds = null, dynKey = "";
     let k = 1, tx = 0, ty = 0, fitted = false;
     const pointers = new Map();
@@ -2879,7 +2931,9 @@ function boot() {
       // order, because it is what the player opened the map for. Read-only here (trap 35):
       // tracking writes the profile the PC plays from, and `note` carries where it is done.
       sideTargets = el("div", "rows");
-      side.append(sideTargets, sideHead, sideRows);
+      // DRA-42 D3: the guide steps you can do here, above both — the desktop panel's order.
+      sideGuide = el("div", "rows");
+      side.append(sideGuide, sideTargets, sideHead, sideRows);
       row.append(wrap, side);
       bindGestures();
       // Refit when the box changes shape — rotating a tablet, entering fullscreen, or
@@ -2903,6 +2957,7 @@ function boot() {
     function drawSide(data) {
       const named = data.named || [];
       const key = JSON.stringify(named.map(n => [n.name, n.due, n.x, n.y, n.fromWiki]));
+      drawGuide(data.guide);
       drawTargets(data.targets);
       sideHead.textContent = "Named — " + (data.timerZone || data.zone || "");
       if (key !== sideKey) {
@@ -2972,6 +3027,23 @@ function boot() {
       for (const e of (t.elsewhere || [])) sideTargets.appendChild(el("div", "row", e));
       if (t.unreadable) sideTargets.appendChild(el("div", "none", t.unreadable));
       if (t.noDropZone) sideTargets.appendChild(el("div", "none", t.noDropZone));
+    }
+
+    // DRA-42 D3: the guide block. No open step here sends no `guide` and this draws NOTHING;
+    // every string is one GuideTargetPresentation built (trap 32) — nothing worded here.
+    let guideKey = "";
+    function drawGuide(g) {
+      const key = JSON.stringify(g || null);
+      if (key === guideKey) return;
+      guideKey = key;
+      sideGuide.replaceChildren();
+      if (!g) return;
+      sideGuide.appendChild(el("h3", "", g.heading));
+      for (const s of (g.steps || [])) sideGuide.appendChild(el("div", "row", s));
+      if (g.more) sideGuide.appendChild(el("div", "none", g.more));
+      if (g.points) sideGuide.appendChild(el("div", "none", g.points));
+      if (g.note) sideGuide.appendChild(el("div", "none", g.note));
+      if (g.unmarkable) sideGuide.appendChild(el("div", "none", g.unmarkable));
     }
 
     // ---- curation ----
@@ -3244,6 +3316,7 @@ function boot() {
       const accent = css.getPropertyValue("--accent").trim() || "#e3b341";
       const dim = css.getPropertyValue("--dim").trim() || "#9c927f";
       const warn = css.getPropertyValue("--warn").trim() || "#e0a030";
+      const good = css.getPropertyValue("--good").trim() || "#6fbf73";
       dyn.replaceChildren();
       for (const c of data.circles) {
         const color = c.named ? accent : dim;
@@ -3283,6 +3356,22 @@ function boot() {
           title.textContent = c.targetText;
           t.appendChild(title);
           dyn.appendChild(t);
+        }
+        // DRA-42 D3: a DIAMOND for a guide step, never a third ring — a second meaning may not
+        // reuse the first's mark. Drawn at the origin in screen pixels and parked on the point by
+        // the camp pins' counter-scaling (data-pin), so it keeps its size as the picture zooms.
+        if (c.guide) {
+          const g = document.createElementNS(SVG, "path");
+          const r = c.named ? 13 : 11;
+          g.setAttribute("d", `M0,${-r} L${r},0 L0,${r} L${-r},0 Z`);
+          g.setAttribute("fill", "none"); g.setAttribute("stroke", good);
+          g.setAttribute("stroke-width", "1.6");
+          g.setAttribute("vector-effect", "non-scaling-stroke");
+          g.dataset.pin = `${c.x} ${c.y}`;
+          const title = document.createElementNS(SVG, "title");
+          title.textContent = c.guideText;
+          g.appendChild(title);
+          dyn.appendChild(g);
         }
         if (c.confirmed) {
           const d = document.createElementNS(SVG, "circle");

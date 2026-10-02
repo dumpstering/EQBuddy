@@ -25,37 +25,6 @@ function Fail([string] $Message) {
     throw $Message
 }
 
-# NOT `$install`: this file is dot-sourced into install-local.ps1's scope, and PowerShell
-# names are case-insensitive, so `$install` IS that script's -Install switch.
-$installSource = Get-Content (Join-Path $scriptDir 'install-local.ps1') -Raw
-if ($installSource -notmatch 'Get-EqProcessesHoldingProfile -ProfileDir \$evolvedProfile') {
-    Fail 'Evolved close does not ask who holds the Evolved profile lock'
-}
-if ($installSource -match 'StartsWith\(\$publishDir') {
-    Fail 'install-local.ps1 still selects the copy to close by publish path'
-}
-if ($installSource -notmatch '\} else \{\s+\$running = @\(Get-Process EQBuddy -ErrorAction SilentlyContinue\)') {
-    Fail 'the non-Evolved close arm is no longer every EQBuddy process'
-}
-if ($installSource -notmatch 'CloseMainWindow\(\)' -or $installSource -notmatch 'WaitForExit\(15000\)') {
-    Fail 'graceful close order is gone (CloseMainWindow then WaitForExit 15000)'
-}
-$closeAt = $installSource.IndexOf('function Close-EqBuddyGracefully')
-$waitAt = $installSource.IndexOf('WaitForExit(15000)', $closeAt)
-$forceAt = $installSource.IndexOf('Stop-Process -Force', $waitAt)
-if ($closeAt -lt 0 -or $waitAt -lt 0 -or $forceAt -lt $waitAt) {
-    Fail 'Stop-Process is not the fallback after WaitForExit'
-}
-
-$single = Get-Content (Join-Path $repo 'src\EQBuddy.UI.Shared\SingleInstance.cs') -Raw
-if ($single -notmatch 'public const string LockFileName = "([^"]+)"') {
-    Fail 'could not read SingleInstance.LockFileName'
-}
-$lockName = $Matches[1]
-if ($script:EqInstanceLockName -ne $lockName) {
-    Fail "lock file name '$script:EqInstanceLockName' is not SingleInstance.LockFileName '$lockName'"
-}
-
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("eqbuddy-dra169-" + [guid]::NewGuid().ToString('N'))
 $publishDir = Join-Path $root 'repo\dist\publish'
 $outsideDir = Join-Path $root 'LocalAppData\EQBuddy Evolved\publish'
@@ -120,6 +89,47 @@ function Test-ExclusiveLockHeld([string] $LockPath) {
 }
 
 try {
+    # These arms used to run before this try. Fail throws, and check.ps1 invokes
+    # the selftest in-process, so a throw outside the catch aborts the later
+    # stages and the FAILED summary instead of recording the failure (DRA-457).
+    # NOT `$install`: this file is dot-sourced into install-local.ps1's scope, and PowerShell
+    # names are case-insensitive, so `$install` IS that script's -Install switch.
+    $installSource = Get-Content (Join-Path $scriptDir 'install-local.ps1') -Raw
+    if ($installSource -notmatch 'Get-EqProcessesHoldingProfile -ProfileDir \$evolvedProfile') {
+        Fail 'Evolved close does not ask who holds the Evolved profile lock'
+    }
+    if ($installSource -match 'StartsWith\(\$publishDir') {
+        Fail 'install-local.ps1 still selects the copy to close by publish path'
+    }
+    if ($installSource -notmatch '\} else \{\s+\$running = @\(Get-Process EQBuddy -ErrorAction SilentlyContinue\)') {
+        Fail 'the non-Evolved close arm is no longer every EQBuddy process'
+    }
+    if ($installSource -notmatch 'CloseMainWindow\(\)' -or $installSource -notmatch 'WaitForExit\(15000\)') {
+        Fail 'graceful close order is gone (CloseMainWindow then WaitForExit 15000)'
+    }
+    $closeAt = $installSource.IndexOf('function Close-EqBuddyGracefully')
+    $waitAt = $installSource.IndexOf('WaitForExit(15000)', $closeAt)
+    $forceAt = $installSource.IndexOf('Stop-Process -Force', $waitAt)
+    if ($closeAt -lt 0 -or $waitAt -lt 0 -or $forceAt -lt $waitAt) {
+        Fail 'Stop-Process is not the fallback after WaitForExit'
+    }
+
+    # DRA-707: RmStartSession WRITES its key into the third argument. A managed string there
+    # is pinned and overrun, and the process dies later on unrelated work - check.ps1's next
+    # in-process stage is what reddens if this regresses.
+    if ($installSource -notmatch 'RmStartSession\(out uint pSessionHandle, int dwSessionFlags, System\.Text\.StringBuilder strSessionKey\)') {
+        Fail 'RmStartSession no longer takes a writable StringBuilder for its session key (heap overrun)'
+    }
+
+    $single = Get-Content (Join-Path $repo 'src\EQBuddy.UI.Shared\SingleInstance.cs') -Raw
+    if ($single -notmatch 'public const string LockFileName = "([^"]+)"') {
+        Fail 'could not read SingleInstance.LockFileName'
+    }
+    $lockName = $Matches[1]
+    if ($script:EqInstanceLockName -ne $lockName) {
+        Fail "lock file name '$script:EqInstanceLockName' is not SingleInstance.LockFileName '$lockName'"
+    }
+
     # The negative is reachable only when the outside copy is genuinely outside
     # the publish directory. A nested path would make the pre-fix filter match
     # it, and the "leaves it running" arm would be aimed at nothing (trap 78).
@@ -223,6 +233,114 @@ try {
     }
 
     Write-Host 'profile-lock selftest: pre-fix left 169.1.0 holding the profile; post-fix closed it; holder is now 169.2.0; v1 169.0.1 untouched'
+
+    # ---- DRA-705 §3: the -Install roll is BUILD FIRST, CLOSE LAST ------------------------
+    # Drives Invoke-EqInstallRoll itself with stand-ins: the running app is a real holder on
+    # its own profile lock (found by the real Get-EqProcessesHoldingProfile, closed by the
+    # real Close-EqBuddyGracefully), the "exes" are byte files in a temp install dir. The
+    # assertion is on the WORLD - which process is alive, which bytes are installed - never
+    # on the returned record alone (trap 84).
+    foreach ($p in @($fresh, $decoy, $v1)) { if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
+    if ($installSource -notmatch '(?s)# roll:build\r?\n.*# roll:build-end.*# roll:close\r?\n.*# roll:close-end') {
+        Fail 'Invoke-EqInstallRoll no longer has its build region before its close region'
+    }
+    $rollProfile = Join-Path $root 'AppData\Roll'
+    $rollInstall = Join-Path $root 'Programs\EQBuddy Evolved'
+    $rollStage = Join-Path $root 'repo\dist\publish-staged'
+    New-Item -ItemType Directory -Force -Path $rollProfile, $rollInstall, $rollStage | Out-Null
+    $rollLock = Join-Path $rollProfile $lockName
+    $installedFile = Join-Path $rollInstall 'EQBuddy.exe'
+    $previousFile = Join-Path $rollInstall 'EQBuddy.previous.exe'
+    $stagedFile = Join-Path $rollStage 'EQBuddy.exe'
+    $calls = @{ launch = 0 }
+
+    function Reset-Roll {
+        [System.IO.File]::WriteAllText($installedFile, 'OLD-BUILD')
+        if (Test-Path -LiteralPath $previousFile) { Remove-Item -LiteralPath $previousFile -Force }
+        if (Test-Path -LiteralPath $stagedFile) { Remove-Item -LiteralPath $stagedFile -Force }
+        $calls.launch = 0
+    }
+    $okBuild = { [System.IO.File]::WriteAllText($stagedFile, 'NEW-BUILD') }
+    $badBuild = { throw 'stand-in publish failed' }
+    $find = { @(Get-EqProcessesHoldingProfile -ProfileDir $rollProfile) }
+    $closeRoll = { param($procs) Close-EqBuddyGracefully -Processes $procs }
+    # The "new build" is a free-mode holder: it stays up until closed, holding nothing.
+    $launchAlive = {
+        param($exe)
+        $calls.launch++
+        $ready = Join-Path $root ('ready-' + [guid]::NewGuid().ToString('N') + '.txt')
+        $p = Start-Process -FilePath $newExe -ArgumentList "`"$(Join-Path $root 'free.lock')`"", "`"$ready`"", 'free' -PassThru
+        $script:started += $p
+        $p
+    }
+    $launchDies = { param($exe) $calls.launch++; Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'exit', '7' -WindowStyle Hidden -PassThru }
+    $rollArgs = @{ FindRunning = $find; Close = $closeRoll; StagedExe = $stagedFile; InstalledExe = $installedFile; LivenessSeconds = 2 }
+
+    # (1) A failed build closes NOTHING: the running copy is alive and the install untouched.
+    Reset-Roll
+    $app = Start-Holder $oldExe $rollLock 'hold'
+    $threw = $false
+    try { Invoke-EqInstallRoll @rollArgs -Build $badBuild -Launch $launchAlive | Out-Null } catch { $threw = $true }
+    if (-not $threw) { Fail 'a failed build did not stop the roll' }
+    $app.Refresh()
+    if ($app.HasExited) { Fail 'a failed build closed the running app (close ran before the build)' }
+    if ((Get-RunningProductVersion $app) -ne '169.1.0') { Fail 'the running app after a failed build is not the one that was running' }
+    if ([System.IO.File]::ReadAllText($installedFile) -ne 'OLD-BUILD') { Fail 'a failed build changed the installed exe' }
+    if ($calls.launch -ne 0) { Fail 'a failed build launched something' }
+
+    # (1-) The negative that makes (1) mean something: the PRE-FIX order, built from this very
+    # function by moving its close region in front of its build region, kills the app.
+    $body = ${function:Invoke-EqInstallRoll}.ToString()
+    $buildRegion = [regex]::Match($body, '(?s)    # roll:build\r?\n.*?# roll:build-end\r?\n').Value
+    $closeRegion = [regex]::Match($body, '(?s)    # roll:close\r?\n.*?# roll:close-end\r?\n').Value
+    if (-not $buildRegion -or -not $closeRegion) { Fail 'could not find the roll regions to build the pre-fix mutant' }
+    $mutant = [scriptblock]::Create($body.Replace($buildRegion, '@@B@@').Replace($closeRegion, $buildRegion).Replace('@@B@@', $closeRegion))
+    $threw = $false
+    try { & $mutant @rollArgs -Build $badBuild -Launch $launchAlive | Out-Null } catch { $threw = $true }
+    $app.Refresh()
+    if (-not $threw) { Fail 'pre-fix mutant: the failed build did not throw' }
+    if (-not $app.HasExited) { Fail 'pre-fix mutant (close before build) left the app running - the order check above is aimed at nothing' }
+
+    # (2) Running + good build: swapped, previous kept, relaunched, alive at the window.
+    Reset-Roll
+    $app = Start-Holder $oldExe $rollLock 'hold'
+    $r = Invoke-EqInstallRoll @rollArgs -Build $okBuild -Launch $launchAlive
+    $app.Refresh()
+    if ($r.Failure) { Fail "good roll reported a failure: $($r.Failure)" }
+    if (-not $app.HasExited) { Fail 'good roll did not close the running app before the swap' }
+    if ([System.IO.File]::ReadAllText($installedFile) -ne 'NEW-BUILD') { Fail 'good roll did not install the new build' }
+    if ([System.IO.File]::ReadAllText($previousFile) -ne 'OLD-BUILD') { Fail 'good roll did not keep the old build as EQBuddy.previous.exe' }
+    if ($calls.launch -ne 1) { Fail "good roll with the app running launched $($calls.launch) times, expected 1" }
+
+    # (3) NOT running: installed, and left closed - the next launch is the new build.
+    Reset-Roll
+    $r = Invoke-EqInstallRoll @rollArgs -Build $okBuild -Launch $launchAlive
+    if ($r.Failure) { Fail "not-running roll reported a failure: $($r.Failure)" }
+    if ($calls.launch -ne 0) { Fail 'the roll launched the app although it was not running' }
+    if ([System.IO.File]::ReadAllText($installedFile) -ne 'NEW-BUILD') { Fail 'not-running roll did not install the new build' }
+
+    # (4) The new build dies inside the window: previous copied back and relaunched.
+    Reset-Roll
+    $app = Start-Holder $oldExe $rollLock 'hold'
+    $r = Invoke-EqInstallRoll @rollArgs -Build $okBuild -Launch $launchDies
+    if (-not $r.Failure) { Fail 'a build that died inside the liveness window was not reported' }
+    if (-not $r.Restored) { Fail 'a build that died was not restored' }
+    if ([System.IO.File]::ReadAllText($installedFile) -ne 'OLD-BUILD') { Fail 'after the liveness failure the installed exe is not the previous build' }
+    if ($calls.launch -ne 2) { Fail "liveness failure launched $($calls.launch) times, expected 2 (new, then the restored previous)" }
+
+    # (5) The restore's own relaunch throws: the roll still RETURNS its record (Failure and
+    # RestoreFailed both set) rather than losing it to an escaped exception.
+    Reset-Roll
+    $app = Start-Holder $oldExe $rollLock 'hold'
+    $launchThrows = { param($exe) $calls.launch++; throw 'stand-in launch failed' }
+    $r = $null
+    try { $r = Invoke-EqInstallRoll @rollArgs -Build $okBuild -Launch $launchThrows } catch { Fail "a throwing restore escaped the roll: $($_.Exception.Message)" }
+    if (-not $r.Failure) { Fail 'a launch that threw was not reported as the failure' }
+    if (-not $r.Restored) { Fail 'the restore copy did not run before the relaunch threw' }
+    if (-not $r.RestoreFailed) { Fail 'a relaunch that threw during restore was not recorded as RestoreFailed' }
+    if ([System.IO.File]::ReadAllText($installedFile) -ne 'OLD-BUILD') { Fail 'after a throwing relaunch the installed exe is not the previous build' }
+
+    Write-Host 'roll selftest: failed build left 169.1.0 running (pre-fix mutant killed it); swap+relaunch; closed stays closed; early death restored previous; a throwing restore still returns its record'
     $script:Dra169Result = 0
 }
 catch {

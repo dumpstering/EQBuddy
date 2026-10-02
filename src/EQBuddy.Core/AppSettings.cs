@@ -18,6 +18,22 @@ public sealed class AppSettings
     // Linux/macOS copy ever wrote it, and those run their own AppSettings on legacy-v1.
     // A profile that still carries the key loads fine — unmapped members are skipped.
     public bool Minimized { get; set; }
+    /// <summary>
+    /// While minimised, a bar that WIDENS keeps its RIGHT edge where it is and grows to the
+    /// left (#942, Jeff-Crawford: "I place it under my map on the right side of the screen.
+    /// So, it currently grows off screen"). Off by default — the bar has always grown to the
+    /// right, and a player who parked it on the LEFT edge wants exactly that.
+    ///
+    /// Written by the checkbox in Options → HUD (<c>SettingsHudView</c>, trap 20); the
+    /// arithmetic is <c>WidgetMetrics.MiniBarLeft</c>. The mode swap itself was already
+    /// right-anchored (#239) and is unaffected.</summary>
+    public bool MiniBarGrowsLeft { get; set; }
+    /// <summary>The minimised bar's width at close, when <see cref="MiniBarGrowsLeft"/> was
+    /// anchoring it — NaN otherwise. <see cref="WindowLeft"/> alone cannot restore a
+    /// right-anchored bar: it opens narrow and widens as the log replays, so without the
+    /// old width the next launch anchors against the narrow one and the widget walks left
+    /// by that difference every launch. <c>WidgetMetrics.MiniBarAnchorSeed</c> reads it.</summary>
+    public double MiniBarWidth { get; set; } = double.NaN;
     /// <summary>Which stats have a ★, and therefore a place on the collapsed HUD bar —
     /// a metric SLOT on its top row for "dps"/"hps"/"xp", a CELL for everything else.
     ///
@@ -271,6 +287,16 @@ public sealed class AppSettings
     /// real saved position (#117).</summary>
     public double WorldLeft { get; set; } = double.NaN;
     public double WorldTop { get; set; } = double.NaN;
+
+    /// <summary>The Evolved shell's (the Guide window's) spot and size, written when it
+    /// closes (#966 — it had none, so a player's move lasted one session). NaN until it has
+    /// been opened once. <c>ShellPlacement.ToPersist</c> keeps an untouched fallback from
+    /// overwriting a real saved spot (#117), and <c>ShellPlacement.Fit</c> puts whatever is
+    /// restored back on a monitor's work area before it is used.</summary>
+    public double ShellLeft { get; set; } = double.NaN;
+    public double ShellTop { get; set; } = double.NaN;
+    public double ShellWidth { get; set; } = double.NaN;
+    public double ShellHeight { get; set; } = double.NaN;
     /// <summary>Quest Tracker era ceiling ("" = any): quests after this era are hidden
     /// (discussion #62). Persisted app-wide — the world's era isn't per character.</summary>
     public string QuestEraFilter { get; set; } = "";
@@ -998,6 +1024,15 @@ public sealed class AppSettings
     /// PC is playing from (trap 35).</para>
     /// </summary>
     public bool ShowGearTargetsOnMap { get; set; } = true;
+    /// <summary>
+    /// **THE MAP'S GUIDE-STEP LAYER — THE DIAMONDS AND THE "GUIDE STEPS" BLOCK TOGETHER**
+    /// (DRA-42 D3, requirements §20). <see cref="ShowGearTargetsOnMap"/>'s shape exactly, and
+    /// its reasons: default ON, one flag for the marks AND the panel AND the phone's copy, applied
+    /// at the single producer (<c>GuideTargets.Gate</c>, read through the widget's one host
+    /// property), written only by the map toolbar's own chip. A SEPARATE flag because it is a
+    /// separate meaning — hiding the upgrades you track must not also hide the steps you are on.
+    /// </summary>
+    public bool ShowGuideTargetsOnMap { get; set; } = true;
     /// <summary>Ring diameter in DIPs.</summary>
     public double CursorRingSize { get; set; } = 46;
 

@@ -130,6 +130,33 @@ $MustList = @(
     # so this is the anticipated escalation, DRA-251's shape, not a C1 reversal.
     # Planner gate-status line NOT-ENGAGED recorded in the plan header, 2026-09-25.
     'DRA-379'
+
+    # DRA-42 - Delivery 4a delta plan (contextual intelligence, post-DRA-40). The C-test
+    # was EVALUATED and no test fired: the 2026-09-12 bag plan itself declared this plan
+    # step ("Phase 5/6 plans written after Delivery 2"), so it is the anticipated
+    # escalation, DRA-251's shape - not a C1 reversal - and no gate, guard, or authority
+    # rule moves (C5 silent; D4 only ADDS a pinned enumeration). Planner gate-status line
+    # NOT-ENGAGED recorded in the plan header, 2026-09-29.
+    'DRA-42'
+
+    # DRA-679 - automatic signing login (service principal), Founder ruling on DRA-677
+    # 2026-10-01 (option B). The C-test fires: a new credential that can sign as the
+    # publisher identity, created by an agent in the Founder's tenant. Challenger waked
+    # 2026-10-01; the line reads PENDING until the walk returns, and an absent return is
+    # disposed by the NO-RETURN rule, never read as PROCEED.
+    'DRA-679'
+    # DRA-675 - release execution becomes an ExO seat. C1 fires: it rewords consequence
+    # item 2 (the release go may be standing/conditional, recorded on the card) and the
+    # "run release.ps1 from a session" rule, Founder-directed on the card 2026-10-01.
+    # Challenger walked it on DRA-676, 2026-10-01: PROCEED-WITH (C1), conditions 1-5
+    # folded into the plan's section 7.
+    'DRA-675'
+
+    # DRA-705 - auto-roll main onto the Founder's PC. The C-test was EVALUATED on the
+    # signed default of the plan's ruling R1 and no test fired (extends the 2026-09-29
+    # daily-driver rule, adds a guard, loosens none). Planner gate-status line
+    # NOT-ENGAGED recorded in the plan header, 2026-10-01; R1(b) unsigned would fire C5.
+    'DRA-705'
 )
 
 if ($MustList.Count -eq 0) {

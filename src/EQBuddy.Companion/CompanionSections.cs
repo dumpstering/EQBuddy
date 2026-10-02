@@ -74,7 +74,33 @@ public sealed record CompanionMapSection(
     /// (DRA-216 D5). <b>Null when nothing is tracked</b> — the desktop map's own rule and the
     /// Helper block's before it: a block with nothing in it is a heading over a control that
     /// is not there, so it draws nothing at all rather than an empty state.</summary>
-    CompanionMapTargets? Targets = null);
+    CompanionMapTargets? Targets = null,
+    /// <summary>The guide steps the player can do in this zone and which dots serve them
+    /// (DRA-42 D3). <b>Null when there is none</b>, the target block's rule.</summary>
+    CompanionMapGuide? Guide = null);
+
+/// <summary>
+/// **THE MAP'S GUIDE-STEP LAYER, AS ALREADY-WORDED SENTENCES** (DRA-42 D3, requirements §20).
+/// Every string is one <see cref="EQBuddy.UI.Shared.GuideTargetPresentation"/> built (trap 32);
+/// READ-ONLY for <see cref="CompanionMapTargets"/>' reason (trap 35) — tracking and ticking write
+/// the profile the PC plays from, and <see cref="EQBuddy.UI.Shared.GuideTargetPresentation.MarkTip"/>
+/// says where that is done.
+/// </summary>
+/// <param name="Heading">The block's heading, which names the zone.</param>
+/// <param name="Note">Where a diamond comes from, said once. Empty with <paramref name="Steps"/>.</param>
+/// <param name="Steps">One row per open step a dot could serve here, capped by the producer's own
+/// number.</param>
+/// <param name="More">The cap's sentence, or "".</param>
+/// <param name="Points">How many of the zone's archived points serve a step, out of how many.
+/// Empty with <paramref name="Steps"/>.</param>
+/// <param name="Unmarkable">The steps here no dot can carry, counted, or "".</param>
+public sealed record CompanionMapGuide(
+    string Heading,
+    string Note,
+    IReadOnlyList<string> Steps,
+    string More,
+    string Points,
+    string Unmarkable);
 
 /// <summary>
 /// **THE MAP'S TARGET LAYER, AS ALREADY-WORDED SENTENCES** (DRA-216 D5, S13/S14).
@@ -195,7 +221,13 @@ public sealed record CompanionMapCircle(
     bool Target = false,
     /// <summary>Which goals and which of their creatures, already worded — the line the desktop
     /// adds to the circle's hover. Empty when <see cref="Target"/> is false.</summary>
-    string TargetText = "");
+    string TargetText = "",
+    /// <summary>This point has seen a dropper of an open guide step killed at it (DRA-42 D3) —
+    /// beside <see cref="Target"/>, never instead of it: two meanings, two marks.</summary>
+    bool Guide = false,
+    /// <summary>Which steps and which droppers, already worded. Empty when
+    /// <see cref="Guide"/> is false.</summary>
+    string GuideText = "");
 
 // ---------------- travel ----------------
 
@@ -584,7 +616,53 @@ public sealed record CompanionQuestsSection(
     /// <summary>Pinned quests with a guide beyond the shipped cap. The page says how many and
     /// where to see them, because a walkthrough that is simply absent reads as a quest we have
     /// nothing for.</summary>
-    int GuidesMore);
+    int GuidesMore,
+    /// <summary>WHILE YOU'RE HERE (DRA-42 D1) — the Guide room's block, every sentence already
+    /// worded desktop-side (trap 32). Null when the host sent no answer; the page draws
+    /// nothing then.</summary>
+    CompanionWhileHere? WhileHere = null);
+
+/// <summary>
+/// The "while you're here" block on the wire: the SAME answer the Guide room draws
+/// (<c>WhileHere.For</c> via <c>MainWindow.WhileHereNow</c>), with every word decided by
+/// <c>WhileHerePresentation</c> before it leaves the PC. READ-ONLY on the phone, as on the
+/// desktop — a step is ticked on its tab.
+/// </summary>
+/// <param name="Heading">"While you're in Crushbone", or the no-zone heading.</param>
+/// <param name="Note">Where the answer comes from, said once.</param>
+/// <param name="Empty">The empty state's sentence, per reason; null when something is listed.</param>
+/// <param name="Groups">§18's groups that have something in them, in order.</param>
+/// <param name="Unplaced">The tracked-but-unplaceable sentence, or null.</param>
+public sealed record CompanionWhileHere(
+    string Heading,
+    string Note,
+    string? Empty,
+    IReadOnlyList<CompanionWhileHereGroup> Groups,
+    string? Unplaced,
+    string? Filtered = null,
+    string? LeaveHeading = null,
+    string? LeaveLine = null,
+    CompanionWhileHereDeparture? Departed = null);
+
+/// <summary>
+/// The notice after an observed zone change (DRA-42 D2): what was left open in the zone just
+/// departed. The phone cannot dismiss it (the dismissal is the PC's, trap 35), so its rows are
+/// drawn outright — the door the room opens with a click — and <paramref name="OnPc"/> says
+/// where the notice is dismissed.
+/// </summary>
+public sealed record CompanionWhileHereDeparture(
+    string Notice,
+    string Quests,
+    IReadOnlyList<CompanionWhileHereGroup> Groups,
+    string OnPc);
+
+/// <summary>One of §18's groups: its label, its rows (capped), and the cap's own sentence.</summary>
+public sealed record CompanionWhileHereGroup(
+    string Label, IReadOnlyList<CompanionWhileHereRow> Rows, string? More);
+
+/// <summary>One row: the step (or, in the Optional group, the quest's name) and the line
+/// under it — "Quest · who", or empty.</summary>
+public sealed record CompanionWhileHereRow(string Title, string Detail);
 
 /// <summary>One quest's walkthrough on the wire: the quest it belongs to, and the checklist
 /// group shape the page's generic renderer already draws. Keyed by NAME because that is what

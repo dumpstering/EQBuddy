@@ -30,7 +30,7 @@ param(
     # Behind every window, so a transparent corner lands on one flat colour. Neutral and
     # deliberately not a palette colour, so "outside the window" reads as outside.
     [string]$Backdrop = '#202225',
-    # OWNER LOCK, ~3:45 PM CT 2026-09-07 (standing, through HELM-FEEDBACK.md): Evolved
+    # OWNER LOCK, ~3:45 PM CT 2026-09-07 (standing; the channel of record is HANDOFF.md): Evolved
     # screenshots, tutorial pictures and What's-new captures use the TEAL + GREY theme going
     # forward, not parchment/brass. `Turquoise` is that palette — a teal accent (#3FCFBE) on
     # a dark teal-grey ground — and it is landed HERE, as the default, rather than as a
@@ -51,7 +51,12 @@ param(
     # Run even though another screen job appears to hold the desktop. See the screen-lock
     # block below for what it overrides and what it deliberately does not.
     [switch]$Force,
-    [switch]$List
+    [switch]$List,
+    # The 'trailer-*' rows only (scripts/trailer/README.md): a REAL character log staged in
+    # place of the Testchar fixture, through scripts/real-log-staging.ps1 — copied into the
+    # throwaway profile, never read in place, every stamp up to -CutAt shifted to end now.
+    [string]$SourceLog = '',
+    [string]$CutAt = ''
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'isolated-profile.ps1')
@@ -624,6 +629,58 @@ $Shots = [ordered]@{
                                # GUIDE ID — the same string the "+" writes.
                                GuideExpanded = @('harvested-aviak-talons')
                            } }
+    # WHILE YOU'RE HERE (DRA-42 D1, requirements §18) — the block above the Guide room's tabs.
+    # Staged through the same keys the app reads (trap 23): the pin through the quest ledger,
+    # the zone through a real "You have entered" line appended to the fixture log, so the
+    # block answers for the LATEST entered zone exactly as it does in play.
+    #
+    # Predicted before the first take (trap 23: a shot whose numbers nobody predicted has not
+    # been reviewed):
+    #   * The heading reads 'While you're in West Commonlands', with a +/− fold at its right.
+    #   * 'Required — quests you track' holds TWO rows, both 'Armor of Ro Quests': 'Collect
+    #     Nightfall Giant's Head' (its only drop zone is West Commonlands) and 'Collect Sand of
+    #     Ro'. NOT the hand-in: its pieces are missing, so it is not actionable here.
+    #   * 'Optional — other quests with a step here' names five quests on ONE wrapped line and
+    #     then the cap's own line ('…and N more quests — the Quests tab's zone view lists every
+    #     quest here').
+    #   * Whatever 'Relevant rewards' shows comes from the fixture log's own loot: a quest the
+    #     log already started. Four rows at most, then '…and N more steps here'. Its rows name
+    #     the quest and who drops it here, and nothing on the block calls anywhere safe or easy.
+    #   * Under it all, the count of Armor of Ro's OTHER open steps — pieces whose item pages
+    #     name no drop zone — said rather than silently dropped (trap 50).
+    #   * The General tab's list starts BELOW the block — the block pushes, it does not overlap.
+    #
+    # THE FIRST TAKE CAPPED AT SIX and pushed the tab strip to y≈570 of a 1000-high room; the
+    # cap is four since (WhileHerePresentation.StepsPerGroup's own note). And its unplaced sentence
+    # blamed Epic 1.0 steps on a profile tracking no epic — the twelve were item pages with no
+    # drop zone, and the sentence names both causes now.
+    'shell-quests-while-here' = @{ Title = 'EQBuddy — Guide'
+                           Env = @{ EQBUDDY_SHELL = 'quests:general'
+                                    EQBUDDY_SHELL_SIZE = '1000x1000' }
+                           Append = @('You have entered West Commonlands.')
+                           Ledger = @{ Tracked = @('Armor of Ro Quests') }
+                           Set = @{} }
+    # BEFORE YOU LEAVE (DRA-42 D2, requirements §19, the log-only reading) — the same block after
+    # the log has taken the player OUT of West Commonlands and into Commonlands. Two real entered
+    # lines, so the departure is the snapshot's own zone list exactly as in play.
+    #
+    # Predicted before the first take (trap 23):
+    #   * Heading 'While you're in Commonlands'. Directly under it, OUTSIDE the fold, an
+    #     accent-edged notice: 'You left West Commonlands with N open steps of quests you track
+    #     or have started there.', then a per-quest line opening 'Armor of Ro Quests (2)', then
+    #     two doors, 'Show them' and 'Dismiss'. The rows are NOT drawn — it arrives closed.
+    #   * N is the West Commonlands shot's Required count PLUS its Relevant count: the same
+    #     producer asked about the zone left, and never its Optional quests.
+    #   * Below, Commonlands' own groups (not Armor of Ro — its pieces drop only in West
+    #     Commonlands), then 'Before you leave Commonlands' and its line: either the per-quest
+    #     count of the fixture log's started work there, or the clear sentence naming EQBuddy's
+    #     catalogs. Nothing says complete, safe or 'Continue anyway'.
+    'shell-quests-while-here-left' = @{ Title = 'EQBuddy — Guide'
+                           Env = @{ EQBUDDY_SHELL = 'quests:general'
+                                    EQBUDDY_SHELL_SIZE = '1000x1000' }
+                           Append = @('You have entered West Commonlands.', 'You have entered Commonlands.')
+                           Ledger = @{ Tracked = @('Armor of Ro Quests') }
+                           Set = @{} }
     # The ACTIVE-STEP CARD (P1d / DRA-36), and the frame both earlier guide shots missed:
     # one with a STUB ROW ABOVE THE FOLD.
     #
@@ -3630,6 +3687,38 @@ $Shots = [ordered]@{
                                'Your skin glows with a pale greenish tint.'
                                'Sanctari begins casting Aegolism.'
                                'You are filled with the power of Aegolism.') }
+    # THE GUIDE BUTTON ON THE MINIMIZED BAR (DRA-700, Founder 2026-10-01) — the pair Reviewer
+    # checks it on. The row is the Founder's own description of the bar: status dot, name,
+    # then DPS / Pet DPS / HPS / XP; HudGlancePet puts the pet slot up on that row rather
+    # than leaving it a starred cell.
+    #
+    # PREDICTION, written before the capture (trap 23). Left to right: the status dot,
+    # "Testchar" in its fixed 92-unit slot and hairline, then the GUIDE button — accent
+    # FILLED with the window's ground colour as its text, the one filled shape on the row —
+    # then the four metric chips (Swords dps, pet dps, Heal hps, Chart %/hr), the ↗ and the ✕.
+    # `mini-bar-guide-long` is the same bar with a 20-letter name (LiveCharacter, below): the
+    # name ELLIPSIZES inside the same slot, so the two PNGs are the SAME WIDTH — a long name
+    # can push nothing, and the button and the chips sit at the same x in both.
+    'mini-bar-guide'  = @{ Title = 'EQBuddy'
+                           Env = @{}
+                           Set = @{ Minimized = $true
+                                    DisabledBreakouts = @('Damage','Healing','Pet','Watch','Loot','Buffs','Quests')
+                                    DefaultRulesVersion = 2147483647
+                                    TrackedRules = @()
+                                    HudGlancePet = $true
+                                    MiniStats = @('dps','pet','hps','xp') } }
+    'mini-bar-guide-long' = @{ Title = 'EQBuddy'
+                           Env = @{}
+                           # A name longer than the slot is sized for (16). The bar follows
+                           # whichever log grew last, so this is a SECOND log under that name,
+                           # written after the fixture's and removed before the next shot.
+                           LiveCharacter = 'Xanthelarionwyndsong'
+                           Set = @{ Minimized = $true
+                                    DisabledBreakouts = @('Damage','Healing','Pet','Watch','Loot','Buffs','Quests')
+                                    DefaultRulesVersion = 2147483647
+                                    TrackedRules = @()
+                                    HudGlancePet = $true
+                                    MiniStats = @('dps','pet','hps','xp') } }
     # The Watch card with rules that the fixture session actually matches — without them
     # the card is a one-line empty state and its sort strip does not exist at all (it
     # appears only above two or more rules). "Spider parts" is deliberately a rule with
@@ -4432,6 +4521,50 @@ $Shots = [ordered]@{
                                       Over = 'Rusty Dagger +2'
                                       TrackedAt = '2026-09-15T20:14:00' }) }
                            } }
+    # ---- DRA-42 D3: the map's guide-step layer ---------------------------------------------
+    #
+    #   'zone-map-guide' — 'zone-map-target''s staging shape for the SECOND layer: a pack, a
+    #   TRACKED QUEST (not a tracked upgrade), and a kill with a fresh /loc behind it.
+    #
+    #   THE EXHIBIT IS D1's, off the shipped catalogs (trap 23): Armor of Ro Quests needs a
+    #   Nightfall Giant's Head, whose item page names "a nightfall giant" in West Commonlands
+    #   (map file commons.txt). The kill is the dropper's own log spelling, so the strict name
+    #   fold is what joins it — no fuzzy match is involved. `AppendLive` for the reason the
+    #   row above gives.
+    #
+    #   PREDICTED (trap 23), before the take:
+    #     * The World window on Map, the staged square, the /loc marker at map (-200, -100).
+    #     * ONE dim (ordinary, not named) spawn circle with a solid DIAMOND round it in the
+    #       theme's good ink — and NO dashed ring, because nothing is tracked in the gear layer.
+    #     * A side panel headed "Guide steps — West Commonlands" ABOVE "Named — …": step rows
+    #       for Armor of Ro's West Commonlands steps (Nightfall Giant's Head, Sand of Ro), then
+    #       "1 of your 1 archived spawn points here serves one of these steps.", then the note
+    #       saying EQBuddy does not know where anything spawns.
+    #     * NO "Going after" block (nothing tracked there), but BOTH chips in the top bar —
+    #       "Going after" and "Guide steps" — filled.
+    #
+    #   TAKEN 2026-09-30. Held: the diamond (and no dashed ring), the block above "Named", the
+    #   points line and the note, both chips filled. TWO MISSES, both true of the fixture rather
+    #   than defects: (1) the circle is a NAMED, not an ordinary dot — the spawn catalog knows
+    #   Nightfall Giant in West Commonlands, so the kill also started a learned countdown and
+    #   planted its camp pin on the same spot; (2) the rows are not only Armor of Ro's — the
+    #   shared fixture's own ledger has STARTED other quests with steps here (Assist the Great
+    #   Xelha, Monk Sash Quests), which are the Relevant group, so the block lists four rows and
+    #   counts "4 more", exactly the cap's sentence.
+    'zone-map-guide'  = @{ Title = 'EQBuddy World'
+                           Env = @{ EQBUDDY_MAP = '1' }
+                           Maps = @{ commons = @(
+                               'L -600.0, -600.0, 0.0, 600.0, -600.0, 0.0, 200, 200, 200'
+                               'L 600.0, -600.0, 0.0, 600.0, 600.0, 0.0, 200, 200, 200'
+                               'L 600.0, 600.0, 0.0, -600.0, 600.0, 0.0, 200, 200, 200'
+                               'L -600.0, 600.0, 0.0, -600.0, -600.0, 0.0, 200, 200, 200'
+                               'P 0.0, 0.0, 0.0, 240, 200, 60, 3, Zone_In') }
+                           AppendLive = @(
+                               'You have entered West Commonlands.'
+                               'Your Location is 100.00, 200.00, 5.00'
+                               'You have slain a nightfall giant!')
+                           Ledger = @{ Tracked = @('Armor of Ro Quests') }
+                           Set = @{} }
     # THE TRAVELS TAB, which had no recipe until 2026-09-05 and did not need one: it was
     # the one World room the WIDGET drew, on the misc card, so EQBUDDY_EXPAND=1 put it in
     # 'widget-expanded' for free. HUD subtraction cut 2 removed that card, which would have
@@ -4672,15 +4805,44 @@ $Shots = [ordered]@{
                            } }
 }
 
+# --- the launch trailer's rooms (scripts/trailer/README.md) ---------------------------
+# Photographed from a REAL character's log (-SourceLog), which is the only thing that makes
+# them worth having: the Helper ranks zones off his own sessions, the Gear goal starts from
+# his own /outputfile inventory, the Sky tab reads his own achievements dump, and World ->
+# Drops is his own kills. `Real` rows are never in a bare batch and refuse to run without
+# -SourceLog; the fixture rows refuse to run WITH it, because a Testchar recipe photographed
+# over somebody else's log is a picture of neither (trap 23). A '*' key inside a Set value
+# is the per-character key ('dranak_freeport'), filled in from the staged log's name.
+# Sizes are larger than the fixture rows' so a 1080p frame holds a room at 1:1.
+$Shots['trailer-home']        = @{ Title = 'EQBuddy — Character'; Real = $true
+                                   Env = @{ EQBUDDY_SHELL = '1'; EQBUDDY_SHELL_SIZE = '1240x820' }; Set = @{} }
+$Shots['trailer-helper-hunt'] = @{ Title = 'EQBuddy — Helper'; Real = $true
+                                   Env = @{ EQBUDDY_SHELL = 'helper'; EQBUDDY_SHELL_SIZE = '1240x820' }
+                                   Set = @{ HelperGoals = @{ '*' = @('LevelUp') } } }
+$Shots['trailer-helper-gear'] = @{ Title = 'EQBuddy — Helper'; Real = $true
+                                   Env = @{ EQBUDDY_SHELL = 'helper'; EQBUDDY_SHELL_SIZE = '1240x820' }
+                                   Set = @{ HelperGoals = @{ '*' = @('FarmGear') } } }
+$Shots['trailer-quests-sky']  = @{ Title = 'EQBuddy — Guide'; Real = $true
+                                   Env = @{ EQBUDDY_SHELL = 'quests:sky'; EQBUDDY_SHELL_SIZE = '1240x900' }; Set = @{} }
+$Shots['trailer-world-drops'] = @{ Title = 'EQBuddy — World'; Real = $true
+                                   Env = @{ EQBUDDY_SHELL = 'world:drops'; EQBUDDY_SHELL_SIZE = '1240x820' }; Set = @{} }
+$Shots['trailer-world-map']   = @{ Title = 'EQBuddy — World'; Real = $true
+                                   Env = @{ EQBUDDY_SHELL = 'world'; EQBUDDY_SHELL_SIZE = '1240x820' }; Set = @{} }
+
 if ($List) {
     $Shots.Keys | ForEach-Object { "{0,-20} {1}" -f $_, $Shots[$_].Title }
     return
 }
 
-$wanted = if ($Shot.Count -gt 0) { $Shot } else { @($Shots.Keys) }
+$wanted = if ($Shot.Count -gt 0) { $Shot } else { @($Shots.Keys | Where-Object { -not $Shots[$_].Real }) }
 foreach ($name in $wanted) {
     if (-not $Shots.Contains($name)) { throw "Unknown shot '$name'. Try -List." }
+    if ($Shots[$name].Real -and -not $SourceLog) { throw "'$name' is photographed from a real log: pass -SourceLog and -CutAt." }
+    if ($SourceLog -and -not $Shots[$name].Real) { throw "'$name' is a fixture shot; -SourceLog is for the trailer-* rows only." }
 }
+# A real log is months of play for the launch replay to fold; eight seconds is the
+# fixture's budget, not a player's.
+if ($SourceLog -and -not $PSBoundParameters.ContainsKey('Settle')) { $Settle = 45 }
 
 $exe = Join-Path $repo 'src/EQBuddy/bin/Release/net10.0-windows/EQBuddy.exe'
 if (-not (Test-Path $exe)) {
@@ -4703,6 +4865,13 @@ $updateDir = New-Item -ItemType Directory -Force (Join-Path $root 'updates')
 
 Write-Host "Profile: $profileDir"
 & (Join-Path $PSScriptRoot 'make-test-session.ps1') -Out $logsDir.FullName | Write-Host
+# The trailer rows: the real log REPLACES the fixture before the pristine copy is taken, so
+# every shot's restore (trap 51) restores the real log, not Testchar's.
+$realStage = $null
+if ($SourceLog) {
+    . (Join-Path $PSScriptRoot 'real-log-staging.ps1')
+    $realStage = Copy-EqRealLogStaged $SourceLog $CutAt $logsDir.FullName
+}
 
 # The fixture log exactly as make-test-session wrote it. Every shot is restored to this
 # BEFORE its own appends, because the log is shared by all 50 shots and Append-Log is
@@ -5377,6 +5546,24 @@ try {
         # so this moves it clear rather than teaching the compositor to tell one process's
         # popups apart from another of its own windows' popups, which it cannot do.
         $set = if ($spec.Set) { $spec.Set.Clone() } else { @{} }
+        if ($realStage) {
+            # The widget comes up with the room. Minimized and parked BELOW the room rather
+            # than at the shared origin: PrintWindow photographs the room either way, but the
+            # Founder watched the expanded panel sit over the Guide for the whole settle (and
+            # walk through old sessions while the log replayed, 2026-09-28) and read it as the
+            # shot's content. Measured the same day: the 62 MB Dranak log is ingested 12.7 s
+            # after launch (ingestDone=1 in the EQBUDDY_EXPAND dump), so -Settle's 45 s
+            # default for -SourceLog is ~3.5x the fold.
+            $o = Get-EqShotOrigin
+            $set['Minimized'] = $true
+            $set['WindowLeft'] = [int]$o.Left
+            $set['WindowTop'] = [int]($o.Top + 910)
+            foreach ($k in @($set.Keys)) {
+                if ($set[$k] -is [hashtable] -and $set[$k].Contains('*')) {
+                    $v = $set[$k].Clone(); $v[$realStage.Key] = $v['*']; $v.Remove('*'); $set[$k] = $v
+                }
+            }
+        }
         if ($spec.Popups) {
             $o = Get-EqShotOrigin
             # Far enough right that it clears the widest shell shot (946 wide) with room to
@@ -5406,6 +5593,17 @@ try {
         # what the shot asked for.
         if ($spec.Prime) { Invoke-PrimeRun $spec.Prime }
         Append-Log $spec.Append
+        # LiveCharacter (DRA-700): the live session under ANOTHER name — the pristine fixture
+        # copied to that character's log and stamped newest, because the app follows the
+        # newest log. `_live` marks it as staging, and every shot removes any left by the
+        # one before it (trap 51: reset is the contract), so a batch never photographs the
+        # previous shot's character. Copy-Item keeps the SOURCE's write time, so it is set.
+        Get-ChildItem -Path $logsDir.FullName -Filter 'eqlog_*_live.txt' | Remove-Item -Force
+        if ($spec.LiveCharacter) {
+            $liveLog = Join-Path $logsDir.FullName "eqlog_$($spec.LiveCharacter)_live.txt"
+            Copy-Item $pristineCopy $liveLog -Force
+            (Get-Item $liveLog).LastWriteTime = (Get-Date).AddSeconds(2)
+        }
         # A multi-session archive for the review picker: the pristine fixture plus
         # day-shifted copies, oldest first so the file reads chronologically. Built
         # outside the Logs folder so the tail can never adopt it.

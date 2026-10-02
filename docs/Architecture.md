@@ -39,20 +39,20 @@ nothing about it is maintained here. See [LEGACY-V1.md](../LEGACY-V1.md), and
 [docs/v2/avalonia-test-disposition.md](v2/avalonia-test-disposition.md) for what its 24 test
 files proved and where each assertion went.
 
-Sizes re-measured 2026-09-04 (E-2c, `.cs` under each project, excluding `obj/` and `bin/`).
+Sizes re-measured 2026-09-30 (DRA-42 D1, `.cs` under each project, excluding `obj/` and `bin/`).
 An earlier set had drifted far enough to mislead — UI.Shared had doubled and the Avalonia
 build tripled since they were written — and then drifted 10-15% again in FOUR DAYS, which is
 why `DocumentationSizeTests` checks this table against the repo: a measurement nobody
 re-measures rots without anyone touching it.
 
-Re-measured 2026-09-29 (own-log teammates, merged with upstream 85f7dc65).
+Re-measured 2026-10-01 (own-log teammates, merged with upstream f9e266a6).
 
 | Project | Files | Lines | Role |
 |---|---:|---:|---|
-| `EQBuddy.Core` | 144 | 40,575 | Parsing, aggregation, settings, catalogs, wiki, the v1 profile import. No UI. |
-| `EQBuddy.UI.Shared` | 142 | 23,188 | View-model/formatting shared by the widget and the mobile projection. **Framework-free — enforced by `ArchitectureTests`.** |
-| `EQBuddy.Companion` | 18 | 5,994 | LAN HTTP+WebSocket server and the mobile page. **UI-toolkit-free on purpose** — which is what let the Avalonia build host it unchanged while that lane existed, and what keeps it honest now that only one does. |
-| `EQBuddy` | 122 | 43,168 | The WPF widget and its windows. Now the largest project in the repo. |
+| `EQBuddy.Core` | 145 | 40,674 | Parsing, aggregation, settings, catalogs, wiki, the v1 profile import. No UI. |
+| `EQBuddy.UI.Shared` | 144 | 23,701 | View-model/formatting shared by the widget and the mobile projection. **Framework-free — enforced by `ArchitectureTests`.** |
+| `EQBuddy.Companion` | 19 | 6,063 | LAN HTTP+WebSocket server and the mobile page. **UI-toolkit-free on purpose** — which is what let the Avalonia build host it unchanged while that lane existed, and what keeps it honest now that only one does. |
+| `EQBuddy` | 123 | 43,404 | The WPF widget and its windows. Now the largest project in the repo. |
 
 ## 2. Load-bearing invariants
 

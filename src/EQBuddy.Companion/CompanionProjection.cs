@@ -165,7 +165,10 @@ public static partial class CompanionProjection
                 // moves no coordinate, no label and no kill count, so without it a paired phone
                 // would keep drawing yesterday's rings for the whole time the player stayed in
                 // the zone (trap 72, the same store-nobody-watches shape).
-                Join(m.Circles, c => $"{c.X:0}:{c.Y:0}:{c.Label}:{c.Imminent}:{c.Confirmed}:{c.Kills}:{(c.Target ? 'T' : '-')}"),
+                Join(m.Circles, c => $"{c.X:0}:{c.Y:0}:{c.Label}:{c.Imminent}:{c.Confirmed}:{c.Kills}:{(c.Target ? 'T' : '-')}:{(c.Guide ? 'G' : '-')}"),
+                // DRA-42 D3, the same rule for the guide block: a step ticked or tracked moves
+                // nothing else on this surface, so its sentences ride the key as lines.
+                m.Guide is { } gd ? Fold(gd.Heading, Join(gd.Steps, s => s), gd.More, gd.Points, gd.Unmarkable) : "-",
                 // The block's own sentences, folded as LINES rather than as a count: one goal
                 // untracked and another tracked in one pass leaves every count unmoved. Nothing
                 // here carries a clock (trap 8) — the rows name items, creatures and zones.
@@ -299,7 +302,21 @@ public static partial class CompanionProjection
                     + Join(g.Group.Rows, r =>
                         // The Helper's line too (DRA-83) — see ChecklistPrint for why in full.
                         $"{r.Id}:{(r.Done ? '1' : '0')}{(r.Skipped ? 's' : '-')}:{r.Helper}"))
-                    + "+" + qs.GuidesMore);
+                    + "+" + qs.GuidesMore,
+                // WHILE YOU'RE HERE (DRA-42 D1): every LINE it draws, never a count — a step
+                // done and another placed in one pass leaves every count where it was
+                // (trap 72). No clock rides it (trap 8): the rows name steps, quests and who.
+                qs.WhileHere is { } wh
+                    ? Fold(wh.Heading, wh.Empty ?? "-", wh.Unplaced ?? "-", wh.Filtered ?? "-",
+                        Join(wh.Groups, g => $"{g.Label}={Join(g.Rows, r => $"{r.Title}/{r.Detail}")}+{g.More}"),
+                        // D2: the standing line and the departure — a step ticked in the zone
+                        // just left moves only the notice, and a dismissal only removes it.
+                        wh.LeaveLine ?? "-",
+                        wh.Departed is { } left
+                            ? $"{left.Notice}~{left.Quests}~"
+                              + Join(left.Groups, g => $"{g.Label}={Join(g.Rows, r => $"{r.Title}/{r.Detail}")}+{g.More}")
+                            : "-")
+                    : "-");
 
         AddChecklist(map, CompanionSurfaces.Gear, snap.Gear);
 
